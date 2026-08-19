@@ -10,4 +10,6 @@ PostgreSQL applies `postgres/init/0001_core_schema.sql` only when its data volum
 
 `0002_development_seed.sql` creates a deterministic development district, zone, inspector, and checklist template. It is for local use only and must not be loaded in production.
 
+For an existing environment, run `npm.cmd --workspace @erf/api run db:migrate` from the repository root. The migration runner records applied files in `schema_migrations` and safely handles databases bootstrapped before that table existed.
+
 RabbitMQ management is available at `http://localhost:15672` using `erf` / `erf_dev_password`. These development credentials must never be used outside local development.

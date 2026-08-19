@@ -25,6 +25,7 @@ The MVP implementation now includes a TypeScript/Fastify API, React PWA, Postgre
 2. Start the dependencies with `docker compose up -d`.
 3. Run `npm.cmd install`, then `npm.cmd run dev:api` and `npm.cmd run dev:web` in separate terminals.
 4. Run the queue worker with `npm.cmd --workspace @erf/api run worker`.
+5. Apply schema changes with `npm.cmd --workspace @erf/api run db:migrate`.
 
 Run `npm.cmd run build` and `npm.cmd test` before committing changes.
 

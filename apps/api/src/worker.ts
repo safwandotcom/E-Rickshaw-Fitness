@@ -1,8 +1,9 @@
-import 'dotenv/config';
 import amqp from 'amqplib';
 import { loadConfig } from './config.js';
 import { Database } from './db.js';
+import { loadDotEnv } from './env.js';
 
+loadDotEnv();
 const config = loadConfig();
 const db = new Database(config);
 const connection = await amqp.connect(config.RABBITMQ_URL);
