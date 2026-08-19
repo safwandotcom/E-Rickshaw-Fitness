@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { AppConfig } from './config.js';
 import { Database } from './db.js';
 import { DevelopmentQrSigner, FieldCipher } from './lib/crypto.js';
-import { AuthorizationError, type Principal, requireRole, requireZoneAccess } from './lib/authorization.js';
+import { AuthorizationError, type Principal, type Role, requireRole, requireZoneAccess } from './lib/authorization.js';
 import { OidcVerifier } from './lib/oidc.js';
 
 declare module '@fastify/jwt' {
@@ -46,11 +46,19 @@ class AuthenticationError extends Error {
   constructor(message: string) { super(message); this.name = 'AuthenticationError'; }
 }
 
-async function principalFor(request: FastifyRequest, config: AppConfig, oidc: OidcVerifier | null): Promise<Principal> {
+async function principalFor(request: FastifyRequest, config: AppConfig, oidc: OidcVerifier | null, db: Database): Promise<Principal> {
   if (config.OIDC_ENABLED) {
     const authorization = request.headers.authorization;
     if (!authorization?.startsWith('Bearer ') || !oidc) throw new AuthenticationError('A valid OIDC bearer token is required.');
-    try { return await oidc.verify(authorization.slice('Bearer '.length)); } catch { throw new AuthenticationError('OIDC token validation failed.'); }
+    try {
+      const external = await oidc.verify(authorization.slice('Bearer '.length));
+      const user = await db.query<{ id: string; status: string }>('SELECT id, status FROM users WHERE external_subject = $1', [external.userId]);
+      if (!user.rows[0] || user.rows[0].status !== 'active') throw new AuthenticationError('OIDC user is not provisioned or active.');
+      const roles = await db.query<{ role_code: Role }>('SELECT role_code FROM user_roles WHERE user_id = $1', [user.rows[0].id]);
+      const scopes = await db.query<{ district_id: string; zone_id: string }>('SELECT district_id, zone_id FROM user_geographies WHERE user_id = $1', [user.rows[0].id]);
+      if (!roles.rows.length) throw new AuthenticationError('OIDC user has no assigned roles.');
+      return { userId: user.rows[0].id, roles: roles.rows.map((row) => row.role_code), scope: { districtIds: scopes.rows.map((row) => row.district_id), zoneIds: scopes.rows.map((row) => row.zone_id) } };
+    } catch (error) { if (error instanceof AuthenticationError) throw error; throw new AuthenticationError('OIDC token validation failed.'); }
   }
   await request.jwtVerify();
   return request.user;
@@ -71,7 +79,7 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
   });
 
   app.get('/api/v1/rickshaws', async (request) => {
-    const principal = await principalFor(request, config, oidc);
+    const principal = await principalFor(request, config, oidc, db);
     requireRole(principal, ['inspector', 'hub_supervisor', 'district_administrator', 'central_administrator']);
     const chassis = z.string().min(1).parse((request.query as { chassis_number?: string }).chassis_number);
     const result = await db.query<{ id: string; chassis_number: string; motor_number: string | null; district_id: string; zone_id: string; status: string }>(
@@ -84,7 +92,7 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
   });
 
   app.post('/api/v1/rickshaws', async (request, reply) => {
-    const principal = await principalFor(request, config, oidc);
+    const principal = await principalFor(request, config, oidc, db);
     requireRole(principal, ['inspector', 'hub_supervisor', 'district_administrator', 'central_administrator']);
     const input = rickshawInput.parse(parseJson(request));
     requireZoneAccess(principal, input.district_id, input.zone_id);
@@ -97,13 +105,13 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
   });
 
   app.get('/api/v1/inspections/templates/current', async (request) => {
-    await principalFor(request, config, oidc);
+    await principalFor(request, config, oidc, db);
     const templates = await db.query('SELECT id, version, vehicle_type, schema_json, effective_from, effective_to FROM inspection_templates WHERE active = true AND effective_from <= now() AND (effective_to IS NULL OR effective_to > now()) ORDER BY effective_from DESC');
     return { data: templates.rows };
   });
 
   app.post('/api/v1/inspections', async (request, reply) => {
-    const principal = await principalFor(request, config, oidc);
+    const principal = await principalFor(request, config, oidc, db);
     requireRole(principal, ['inspector']);
     const input = inspectionInput.parse(parseJson(request));
     const idempotencyKey = request.headers['idempotency-key'];
@@ -177,7 +185,7 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
   app.get('/api/v1/verifier/keys', async () => ({ data: signer.publicManifest() }));
 
   app.post('/api/v1/admin/certificates/:id/revoke', async (request, reply) => {
-    const principal = await principalFor(request, config, oidc);
+    const principal = await principalFor(request, config, oidc, db);
     requireRole(principal, ['district_administrator', 'central_administrator']);
     const certificateId = z.string().uuid().parse((request.params as { id: string }).id);
     const input = revocationInput.parse(parseJson(request));
