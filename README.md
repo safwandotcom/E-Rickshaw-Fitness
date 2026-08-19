@@ -27,3 +27,5 @@ The MVP implementation now includes a TypeScript/Fastify API, React PWA, Postgre
 4. Run the queue worker with `npm.cmd --workspace @erf/api run worker`.
 
 Run `npm.cmd run build` and `npm.cmd test` before committing changes.
+
+GitHub Actions validates lint, tests, builds, dependency advisories, and the API container on every push and pull request.
