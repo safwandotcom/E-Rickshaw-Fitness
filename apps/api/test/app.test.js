@@ -38,3 +38,15 @@ test('serves liveness and development token endpoints', async () => {
   assert.match(token.json().access_token, /^ey/);
   await app.close();
 });
+
+test('does not expose development tokens outside local development', async () => {
+  const app = await buildApp({ ...config, NODE_ENV: 'staging' }, fakeDb);
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/v1/auth/dev-token',
+    headers: { 'content-type': 'application/json' },
+    payload: JSON.stringify({ user_id: '00000000-0000-0000-0000-000000000201', roles: ['inspector'], district_ids: [], zone_ids: [] })
+  });
+  assert.equal(response.statusCode, 404);
+  await app.close();
+});

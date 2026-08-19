@@ -54,7 +54,7 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
   const cipher = new FieldCipher(config.DATA_ENCRYPTION_SECRET);
 
   app.post('/api/v1/auth/dev-token', async (request, reply) => {
-    if (config.NODE_ENV === 'production') return reply.code(404).send();
+    if (config.NODE_ENV !== 'development') return reply.code(404).send();
     const input = z.object({ user_id: z.string().uuid(), roles: z.array(z.enum(['inspector', 'hub_supervisor', 'district_administrator', 'central_administrator', 'finance_operator', 'traffic_police_verifier'])).min(1), district_ids: z.array(z.string().uuid()), zone_ids: z.array(z.string().uuid()) }).parse(parseJson(request));
     return { access_token: await reply.jwtSign({ userId: input.user_id, roles: input.roles, scope: { districtIds: input.district_ids, zoneIds: input.zone_ids } }), token_type: 'Bearer' };
   });

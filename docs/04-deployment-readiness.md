@@ -27,7 +27,7 @@
 ## Security constraints
 
 - The generated signer is suitable only for local development because its private key is ephemeral. Production must sign in KMS/HSM and never export its private key.
-- The `POST /api/v1/auth/dev-token` endpoint is intentionally unavailable under `NODE_ENV=production`; production authentication must use an authority identity provider.
+- The `POST /api/v1/auth/dev-token` endpoint is intentionally available only under `NODE_ENV=development`; staging and production authentication must use an authority identity provider.
 - Development Docker credentials and example secrets must never be deployed. Rotate all secrets before connecting any shared system.
 - API endpoint-level checks are a foundation. Apply database role separation and row-level policy where the authority requires defense in depth.
 
