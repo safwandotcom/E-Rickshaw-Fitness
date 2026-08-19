@@ -1,0 +1,29 @@
+# E-Rickshaw Fitness Certification Platform
+
+Planning and design documents for a secure, offline-capable e-rickshaw fitness inspection, payment, certification, and roadside-verification platform.
+
+## Documents
+
+- [Product & Technical Specification](docs/01-product-technical-specification.md)
+- [Architecture, Data, API & Security Design](docs/02-architecture-data-api-security.md)
+- [Implementation Plan](docs/03-implementation-plan.md)
+- [Deployment Readiness](docs/04-deployment-readiness.md)
+
+## Scope at a glance
+
+The platform enables authorized inspectors to record vehicle fitness inspections, owners to pay fees through mobile financial services, the authority to issue signed certificates and QR stickers, and traffic police to verify certificates online or offline.
+
+The recommended first implementation is a modular monolith with asynchronous workers. Its modules are separated by clear interfaces so high-volume functions can be extracted into microservices later without prematurely adding operational complexity.
+
+## Implementation status
+
+The MVP implementation now includes a TypeScript/Fastify API, React PWA, PostgreSQL schema, signed QR verification, transaction outbox worker, and local PostgreSQL/Redis/RabbitMQ services. See [local setup](infra/README.md) for service instructions.
+
+## Run locally
+
+1. Copy `.env.example` to `.env` and replace all development secrets before any shared deployment.
+2. Start the dependencies with `docker compose up -d`.
+3. Run `npm.cmd install`, then `npm.cmd run dev:api` and `npm.cmd run dev:web` in separate terminals.
+4. Run the queue worker with `npm.cmd --workspace @erf/api run worker`.
+
+Run `npm.cmd run build` and `npm.cmd test` before committing changes.

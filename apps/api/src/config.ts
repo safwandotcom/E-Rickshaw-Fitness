@@ -1,0 +1,21 @@
+import { z } from 'zod';
+
+const environmentSchema = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'staging', 'production']).default('development'),
+  PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+  HOST: z.string().default('0.0.0.0'),
+  DATABASE_URL: z.string().url(),
+  REDIS_URL: z.string().url(),
+  RABBITMQ_URL: z.string().url(),
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
+  AUTH_JWT_SECRET: z.string().min(32).default('local-development-jwt-secret-change-me'),
+  DATA_ENCRYPTION_SECRET: z.string().min(32).default('local-development-data-secret-change-me'),
+  MFS_WEBHOOK_SECRET: z.string().min(32).default('local-development-mfs-webhook-secret'),
+  QR_SIGNING_KEY_ID: z.string().min(1).default('dev-2026-01')
+});
+
+export type AppConfig = z.infer<typeof environmentSchema>;
+
+export function loadConfig(environment = process.env): AppConfig {
+  return environmentSchema.parse(environment);
+}

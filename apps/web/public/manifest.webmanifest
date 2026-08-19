@@ -1,0 +1,9 @@
+{
+  "name": "E-Rickshaw Fitness",
+  "short_name": "ER Fitness",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f9f8",
+  "theme_color": "#006a4e",
+  "description": "Field inspection and certificate verification."
+}

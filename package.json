@@ -1,0 +1,13 @@
+{
+  "name": "e-rickshaw-fitness",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev:api": "npm --workspace @erf/api run dev",
+    "dev:web": "npm --workspace @erf/web run dev",
+    "build": "npm --workspace @erf/api run build && npm --workspace @erf/web run build",
+    "test": "npm --workspace @erf/api run test",
+    "lint": "npm --workspace @erf/api run lint"
+  }
+}
