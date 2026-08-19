@@ -5,6 +5,7 @@ import type { AppConfig } from './config.js';
 import { Database } from './db.js';
 import { DevelopmentQrSigner, FieldCipher } from './lib/crypto.js';
 import { AuthorizationError, type Principal, requireRole, requireZoneAccess } from './lib/authorization.js';
+import { OidcVerifier } from './lib/oidc.js';
 
 declare module '@fastify/jwt' {
   interface FastifyJWT {
@@ -41,7 +42,16 @@ function parseJson(request: FastifyRequest): unknown {
   return JSON.parse(request.body);
 }
 
-async function principalFor(request: FastifyRequest): Promise<Principal> {
+class AuthenticationError extends Error {
+  constructor(message: string) { super(message); this.name = 'AuthenticationError'; }
+}
+
+async function principalFor(request: FastifyRequest, config: AppConfig, oidc: OidcVerifier | null): Promise<Principal> {
+  if (config.OIDC_ENABLED) {
+    const authorization = request.headers.authorization;
+    if (!authorization?.startsWith('Bearer ') || !oidc) throw new AuthenticationError('A valid OIDC bearer token is required.');
+    try { return await oidc.verify(authorization.slice('Bearer '.length)); } catch { throw new AuthenticationError('OIDC token validation failed.'); }
+  }
   await request.jwtVerify();
   return request.user;
 }
@@ -52,6 +62,7 @@ function billCode(): string {
 
 export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Database, signer: DevelopmentQrSigner): void {
   const cipher = new FieldCipher(config.DATA_ENCRYPTION_SECRET);
+  const oidc = config.OIDC_ENABLED ? new OidcVerifier(config) : null;
 
   app.post('/api/v1/auth/dev-token', async (request, reply) => {
     if (config.NODE_ENV !== 'development') return reply.code(404).send();
@@ -60,7 +71,7 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
   });
 
   app.get('/api/v1/rickshaws', async (request) => {
-    const principal = await principalFor(request);
+    const principal = await principalFor(request, config, oidc);
     requireRole(principal, ['inspector', 'hub_supervisor', 'district_administrator', 'central_administrator']);
     const chassis = z.string().min(1).parse((request.query as { chassis_number?: string }).chassis_number);
     const result = await db.query<{ id: string; chassis_number: string; motor_number: string | null; district_id: string; zone_id: string; status: string }>(
@@ -73,7 +84,7 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
   });
 
   app.post('/api/v1/rickshaws', async (request, reply) => {
-    const principal = await principalFor(request);
+    const principal = await principalFor(request, config, oidc);
     requireRole(principal, ['inspector', 'hub_supervisor', 'district_administrator', 'central_administrator']);
     const input = rickshawInput.parse(parseJson(request));
     requireZoneAccess(principal, input.district_id, input.zone_id);
@@ -86,13 +97,13 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
   });
 
   app.get('/api/v1/inspections/templates/current', async (request) => {
-    await principalFor(request);
+    await principalFor(request, config, oidc);
     const templates = await db.query('SELECT id, version, vehicle_type, schema_json, effective_from, effective_to FROM inspection_templates WHERE active = true AND effective_from <= now() AND (effective_to IS NULL OR effective_to > now()) ORDER BY effective_from DESC');
     return { data: templates.rows };
   });
 
   app.post('/api/v1/inspections', async (request, reply) => {
-    const principal = await principalFor(request);
+    const principal = await principalFor(request, config, oidc);
     requireRole(principal, ['inspector']);
     const input = inspectionInput.parse(parseJson(request));
     const idempotencyKey = request.headers['idempotency-key'];
@@ -166,7 +177,7 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
   app.get('/api/v1/verifier/keys', async () => ({ data: signer.publicManifest() }));
 
   app.post('/api/v1/admin/certificates/:id/revoke', async (request, reply) => {
-    const principal = await principalFor(request);
+    const principal = await principalFor(request, config, oidc);
     requireRole(principal, ['district_administrator', 'central_administrator']);
     const certificateId = z.string().uuid().parse((request.params as { id: string }).id);
     const input = revocationInput.parse(parseJson(request));
@@ -201,6 +212,7 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
   });
 
   app.setErrorHandler((error, request, reply) => {
+    if (error instanceof AuthenticationError) return reply.code(401).send({ error: { code: 'UNAUTHORIZED', message: error.message, request_id: request.id } });
     if (error instanceof AuthorizationError) return reply.code(403).send({ error: { code: 'OUT_OF_SCOPE', message: error.message, request_id: request.id } });
     if (error instanceof z.ZodError || error instanceof SyntaxError) return reply.code(400).send({ error: { code: 'VALIDATION_ERROR', message: 'The request data is invalid.', request_id: request.id } });
     request.log.error(error);
