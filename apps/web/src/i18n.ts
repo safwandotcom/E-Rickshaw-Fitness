@@ -113,7 +113,8 @@ const dictionary = {
   vehicleFoundMessage: { en: 'Vehicle found. You can use its UUID in the inspection form.', bn: 'যানবাহন পাওয়া গেছে। পরিদর্শন ফর্মে এর UUID ব্যবহার করতে পারেন।' },
   noVehicleFoundMessage: { en: 'No vehicle found with that chassis number.', bn: 'এই চেসিস নম্বরে কোনো যানবাহন পাওয়া যায়নি।' },
   vehicleRegRequiresOnlineMessage: { en: 'Vehicle registration requires an authenticated online connection.', bn: 'যানবাহন নিবন্ধনের জন্য প্রমাণীকৃত অনলাইন সংযোগ প্রয়োজন।' },
-  userProvisionedMessage: { en: 'User provisioned successfully.', bn: 'ব্যবহারকারী সফলভাবে তৈরি হয়েছে।' }
+  userProvisionedMessage: { en: 'User provisioned successfully.', bn: 'ব্যবহারকারী সফলভাবে তৈরি হয়েছে।' },
+  sessionExpiredMessage: { en: 'Your session expired. Sign in again.', bn: 'আপনার সেশনের মেয়াদ শেষ হয়ে গেছে। আবার সাইন ইন করুন।' }
 } as const satisfies Record<string, Record<Language, string>>;
 
 export type StringKey = keyof typeof dictionary;

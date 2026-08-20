@@ -71,6 +71,14 @@ interface DomainEventMessage {
   occurred_at: string;
 }
 
+// Superseded by erf.domain-events below. A broker that already ran the
+// previous worker still has this queue durably declared with its old
+// bindings, which would otherwise keep silently accumulating unconsumed
+// 'payment.instructions.requested'/'certificate.issued' messages forever
+// on any environment that upgrades rather than starting from an empty
+// broker. queue.delete is a no-op if the queue was never created.
+await channel.deleteQueue('erf.notifications').catch(() => undefined);
+
 await channel.assertExchange('erf.dlx', 'fanout', { durable: true });
 await channel.assertQueue('erf.domain-events', { durable: true, deadLetterExchange: 'erf.dlx' });
 await channel.bindQueue('erf.domain-events', 'erf.events', '#');

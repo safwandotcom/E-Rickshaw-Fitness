@@ -32,7 +32,7 @@ test('voiding an inspection expires its unpaid bill and reverts the rickshaw to 
       return work({
         async query(sql, values) {
           calls.push(sql.split('\n')[0].trim());
-          if (sql.startsWith('SELECT i.status')) return { rows: [{ status: 'passed', rickshaw_id: 'rickshaw-1', district_id: districtId, zone_id: zoneId }] };
+          if (sql.startsWith('SELECT i.status')) return { rows: [{ status: 'passed', rickshaw_id: 'rickshaw-1', district_id: districtId, zone_id: zoneId, rickshaw_status: 'pre_approved' }] };
           if (sql.startsWith('UPDATE inspections')) { assert.equal(values[1], 'documentation error'); return { rows: [] }; }
           if (sql.startsWith('UPDATE bills')) return { rows: [] };
           if (sql.startsWith('UPDATE rickshaws')) return { rows: [] };
@@ -49,9 +49,37 @@ test('voiding an inspection expires its unpaid bill and reverts the rickshaw to 
     payload: JSON.stringify({ reason_code: 'documentation error' })
   });
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.json(), { data: { voided: true } });
+  assert.deepEqual(response.json(), { data: { voided: true, certificate_action_required: false } });
   assert.ok(calls.some((sql) => sql.startsWith('UPDATE bills')));
   assert.ok(calls.some((sql) => sql.startsWith('UPDATE rickshaws')));
+  await app.close();
+});
+
+test('voiding an inspection behind an already-certified rickshaw flags that certificate action is required', async () => {
+  const db = {
+    async ready() { return true; },
+    async query(sql) { if (sql.startsWith('INSERT INTO audit_events')) return { rows: [] }; throw new Error(`Unexpected top-level query: ${sql}`); },
+    async transaction(work) {
+      return work({
+        async query(sql) {
+          if (sql.startsWith('SELECT i.status')) return { rows: [{ status: 'passed', rickshaw_id: 'rickshaw-1', district_id: districtId, zone_id: zoneId, rickshaw_status: 'certified' }] };
+          if (sql.startsWith('UPDATE inspections')) return { rows: [] };
+          if (sql.startsWith('UPDATE bills')) return { rows: [] };
+          if (sql.startsWith('UPDATE rickshaws')) return { rows: [] };
+          throw new Error(`Unexpected transaction query: ${sql}`);
+        }
+      });
+    }
+  };
+  const app = await buildApp(config, db);
+  const token = await tokenWithScope(app, ['hub_supervisor']);
+  const response = await app.inject({
+    method: 'POST', url: '/api/v1/inspections/11111111-1111-1111-1111-111111111111/void',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    payload: JSON.stringify({ reason_code: 'fraudulent approval' })
+  });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), { data: { voided: true, certificate_action_required: true } });
   await app.close();
 });
 
@@ -114,8 +142,8 @@ function renewDb(certificateStatus, supersededByCertificateId = null) {
     async transaction(work) {
       return work({
         async query(sql) {
-          if (sql.includes('FROM certificates c JOIN rickshaws')) return { rows: [{ status: certificateStatus, rickshaw_id: 'rickshaw-1', district_id: districtId, zone_id: zoneId, chassis_number: 'ER-1234-CHASSIS', zone_code: 'DHK-N-04', owner_phone_encrypted: Buffer.from('cipher'), superseded_by_certificate_id: supersededByCertificateId }] };
-          if (sql.startsWith('SELECT short_code FROM certificates')) return { rows: [{ short_code: 'EXIST1' }] };
+          if (sql.includes('FROM certificates c JOIN rickshaws')) return { rows: [{ status: certificateStatus, rickshaw_id: 'rickshaw-1', district_id: districtId, zone_id: zoneId, chassis_number: 'ER-1234-CHASSIS', zone_code: 'DHK-N-04', owner_phone_encrypted: Buffer.from('cipher'), superseded_by_certificate_id: supersededByCertificateId, bill_id: 'bill-1' }] };
+          if (sql.includes('WITH RECURSIVE chain')) return { rows: [{ short_code: 'EXIST1' }] };
           if (sql.startsWith('INSERT INTO certificates')) return { rows: [{ id: 'certificate-new', short_code: 'NEWCODE', expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) }] };
           if (sql.startsWith('UPDATE certificates SET qr_payload')) return { rows: [] };
           if (sql.startsWith('INSERT INTO outbox_events')) return { rows: [] };

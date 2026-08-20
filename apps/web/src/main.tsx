@@ -27,6 +27,7 @@ function App() {
   const [view, setView] = useState<View>('inspection');
   const [message, setMessage] = useState(() => translate(loadLanguage(), 'readyMessage'));
   const [token, setToken] = useState('');
+  const [tokenExpiresAt, setTokenExpiresAt] = useState<number | null>(null);
   const [certificate, setCertificate] = useState('');
   const [verification, setVerification] = useState('');
   const [shortCode, setShortCode] = useState('');
@@ -61,12 +62,31 @@ function App() {
       .then((result) => {
         if (!result) return;
         setToken(result.idToken);
+        setTokenExpiresAt(result.expiresAt);
         setMessage(t('signedInProviderMessage'));
-        window.history.replaceState(null, '', window.location.pathname);
       })
       .catch((error) => setMessage(`Sign-in failed: ${error instanceof Error ? error.message : 'unknown error'}`))
-      .finally(() => setSigningIn(false));
+      .finally(() => {
+        setSigningIn(false);
+        // Clear ?code=&state= on both success and failure — completeSignIn
+        // consumes the single-use sessionStorage verifier on its first read
+        // regardless of outcome, so leaving the stale params in the URL and
+        // reloading after a failure would hit "no pending sign-in found"
+        // instead of surfacing the real error a second time.
+        window.history.replaceState(null, '', window.location.pathname);
+      });
   }, []);
+
+  // An OIDC id_token is typically short-lived (minutes, not hours). Without
+  // this, an expired token just fails silently on the next API call with a
+  // generic "Could not load..." message instead of prompting re-sign-in.
+  useEffect(() => {
+    if (!tokenExpiresAt) return;
+    const delay = tokenExpiresAt - Date.now();
+    if (delay <= 0) { setToken(''); setTokenExpiresAt(null); setMessage(t('sessionExpiredMessage')); return; }
+    const timer = setTimeout(() => { setToken(''); setTokenExpiresAt(null); setMessage(t('sessionExpiredMessage')); }, delay);
+    return () => clearTimeout(timer);
+  }, [tokenExpiresAt]);
 
   const auth = useMemo<Record<string, string>>(() => token ? { Authorization: `Bearer ${token}` } : ({} as Record<string, string>), [token]);
   async function loadTemplates() {
@@ -203,7 +223,7 @@ function App() {
     {oidcConfig ? (
       <section className="auth-panel">
         {token
-          ? <p className="result valid">Signed in. <button type="button" onClick={() => { setToken(''); setMessage(t('signedOutMessage')); }}>{t('signOut')}</button></p>
+          ? <p className="result valid">Signed in. <button type="button" onClick={() => { setToken(''); setTokenExpiresAt(null); setMessage(t('signedOutMessage')); }}>{t('signOut')}</button></p>
           : <button type="button" onClick={() => void beginSignIn(oidcConfig)} disabled={signingIn}>{signingIn ? t('completingSignIn') : t('signInWithAuthority')}</button>}
       </section>
     ) : (

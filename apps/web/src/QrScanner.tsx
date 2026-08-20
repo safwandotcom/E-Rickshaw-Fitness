@@ -29,11 +29,19 @@ export function QrCameraScanner({ onDecode }: QrCameraScannerProps) {
     if (!navigator.mediaDevices?.getUserMedia) { setError('This browser does not support camera capture. Paste the QR payload instead.'); return; }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+      // The <video> element is always mounted (see render below) precisely so
+      // this ref is guaranteed to exist here — conditionally rendering it
+      // only while `scanning` is true would attach the stream to nothing,
+      // since `scanning` doesn't flip true until after this assignment.
+      const video = videoRef.current;
+      if (!video) {
+        stream.getTracks().forEach((track) => track.stop());
+        setError('Camera preview is not ready. Try again.');
+        return;
       }
+      streamRef.current = stream;
+      video.srcObject = stream;
+      await video.play();
       setScanning(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Camera access was denied or unavailable.');
@@ -69,12 +77,10 @@ export function QrCameraScanner({ onDecode }: QrCameraScannerProps) {
 
   return (
     <div className="qr-scanner">
+      <video ref={videoRef} muted playsInline className="qr-scanner-video" hidden={!scanning} />
+      <canvas ref={canvasRef} hidden />
       {scanning
-        ? <>
-            <video ref={videoRef} muted playsInline className="qr-scanner-video" />
-            <canvas ref={canvasRef} hidden />
-            <button type="button" onClick={stop}>Stop camera</button>
-          </>
+        ? <button type="button" onClick={stop}>Stop camera</button>
         : <button type="button" onClick={() => void start()}>Scan with camera</button>}
       {error ? <p className="result invalid">{error}</p> : null}
     </div>
