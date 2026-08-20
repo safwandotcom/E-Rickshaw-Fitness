@@ -17,6 +17,7 @@ const environmentSchema = z.object({
   OIDC_AUDIENCE: z.string().min(1).optional(),
   SMS_GATEWAY_URL: z.string().url().optional(),
   SMS_GATEWAY_TOKEN: z.string().min(16).optional()
+  ,SMS_WEBHOOK_SECRET: z.string().min(32).default('local-development-sms-webhook-secret')
 });
 
 export type AppConfig = z.infer<typeof environmentSchema>;
@@ -24,7 +25,7 @@ export type AppConfig = z.infer<typeof environmentSchema>;
 export function loadConfig(environment = process.env): AppConfig {
   const config = environmentSchema.parse(environment);
   if (config.NODE_ENV === 'production') {
-    const localDefaults = [config.AUTH_JWT_SECRET, config.DATA_ENCRYPTION_SECRET, config.MFS_WEBHOOK_SECRET].some((secret) => secret.startsWith('local-development-') || secret.startsWith('replace-with-'));
+    const localDefaults = [config.AUTH_JWT_SECRET, config.DATA_ENCRYPTION_SECRET, config.MFS_WEBHOOK_SECRET, config.SMS_WEBHOOK_SECRET].some((secret) => secret.startsWith('local-development-') || secret.startsWith('replace-with-'));
     if (localDefaults) throw new Error('Production configuration must provide non-development secrets.');
   }
   if (config.NODE_ENV !== 'development' && (!config.OIDC_ENABLED || !config.OIDC_ISSUER_URL || !config.OIDC_AUDIENCE)) {

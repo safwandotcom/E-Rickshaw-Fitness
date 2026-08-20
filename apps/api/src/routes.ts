@@ -43,6 +43,7 @@ const userProvisionInput = z.object({
   roles: z.array(z.enum(['inspector', 'hub_supervisor', 'district_administrator', 'central_administrator', 'finance_operator', 'traffic_police_verifier'])).min(1),
   scopes: z.array(z.object({ district_id: z.string().uuid(), zone_id: z.string().uuid() })).default([])
 });
+const smsStatusInput = z.object({ provider_message_id: z.string().min(1), status: z.enum(['delivered', 'failed']), error: z.string().max(500).optional() });
 
 function parseJson(request: FastifyRequest): unknown {
   if (typeof request.body !== 'string') throw new Error('Expected a JSON request body.');
@@ -211,6 +212,17 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
     if ('duplicate' in outcome && outcome.duplicate) return { data: { accepted: true, duplicate: true } };
     if ('invalid' in outcome && outcome.invalid) return reply.code(409).send({ error: { code: 'PAYMENT_NOT_ACCEPTED', message: 'The payment could not be matched to an unpaid bill.', request_id: request.id } });
     return { data: { accepted: true, certificate_short_code: outcome.shortCode } };
+  });
+
+  app.post('/api/v1/webhooks/sms/:provider', async (request, reply) => {
+    const raw = typeof request.body === 'string' ? request.body : '';
+    const supplied = request.headers['x-erf-signature'];
+    const expected = createHmac('sha256', config.SMS_WEBHOOK_SECRET).update(raw).digest('hex');
+    if (typeof supplied !== 'string' || supplied.length !== expected.length || !timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) return reply.code(401).send({ error: { code: 'INVALID_SIGNATURE', message: 'Signature validation failed.', request_id: request.id } });
+    const input = smsStatusInput.parse(JSON.parse(raw));
+    const updated = await db.query<{ id: string }>("UPDATE notification_jobs SET status = $1, last_error = $2 WHERE provider_message_id = $3 RETURNING id", [input.status, input.error ?? null, input.provider_message_id]);
+    if (!updated.rows[0]) return reply.code(404).send({ error: { code: 'MESSAGE_NOT_FOUND', message: 'The provider message was not found.', request_id: request.id } });
+    return { data: { accepted: true } };
   });
 
   app.get('/api/v1/verifier/keys', async () => ({ data: signer.publicManifest() }));
