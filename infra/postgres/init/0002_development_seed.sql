@@ -22,5 +22,11 @@ ON CONFLICT DO NOTHING;
 
 INSERT INTO inspection_templates (id, version, vehicle_type, schema_json, effective_from) VALUES
   ('00000000-0000-0000-0000-000000000301', 'dev-v1', 'e-rickshaw',
-   '{"required":["brakes","lights"],"properties":{"brakes":{"type":"boolean"},"lights":{"type":"boolean"},"notes":{"type":"string"}}}'::jsonb, now() - interval '1 day')
+   '{"fields":[
+       {"key":"brakes","label":"Brakes","label_bn":"ব্রেক","type":"pass_fail_na"},
+       {"key":"lights","label":"Lights","label_bn":"লাইট","type":"pass_fail_na"},
+       {"key":"horn","label":"Horn","label_bn":"হর্ণ","type":"pass_fail_na"},
+       {"key":"tyres","label":"Tyres","label_bn":"টায়ার","type":"pass_fail_na"},
+       {"key":"notes","label":"Additional notes","label_bn":"অতিরিক্ত মন্তব্য","type":"text"}
+     ]}'::jsonb, now() - interval '1 day')
 ON CONFLICT (version) DO NOTHING;

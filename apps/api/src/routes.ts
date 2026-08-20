@@ -44,7 +44,18 @@ const userProvisionInput = z.object({
   scopes: z.array(z.object({ district_id: z.string().uuid(), zone_id: z.string().uuid() })).default([])
 });
 const smsStatusInput = z.object({ provider_message_id: z.string().min(1), status: z.enum(['delivered', 'failed']), error: z.string().max(500).optional() });
-const templateInput = z.object({ version: z.string().trim().min(1).max(64), vehicle_type: z.string().trim().min(1).max(64), schema_json: z.record(z.unknown()), effective_from: z.string().datetime(), effective_to: z.string().datetime().optional() });
+// A checklist template describes one field per inspected item. `pass_fail_na`
+// fields render as a three-state choice in the inspector app; `text` fields
+// capture free-form notes. The inspector app renders this schema directly
+// rather than hardcoding checklist fields, so a new template version can add
+// or change checks without a client release.
+const checklistFieldInput = z.object({
+  key: z.string().trim().min(1).max(64).regex(/^[a-z][a-z0-9_]*$/, 'Field keys must be lowercase snake_case.'),
+  label: z.string().trim().min(1).max(160),
+  label_bn: z.string().trim().min(1).max(160).optional(),
+  type: z.enum(['pass_fail_na', 'text'])
+});
+const templateInput = z.object({ version: z.string().trim().min(1).max(64), vehicle_type: z.string().trim().min(1).max(64), schema_json: z.object({ fields: z.array(checklistFieldInput).min(1) }), effective_from: z.string().datetime(), effective_to: z.string().datetime().optional() });
 
 function parseJson(request: FastifyRequest): unknown {
   if (typeof request.body !== 'string') throw new Error('Expected a JSON request body.');

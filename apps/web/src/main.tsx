@@ -11,7 +11,8 @@ type View = 'inspection' | 'verification' | 'admin';
 type KeyRecord = { key_id: string; public_key_pem: string };
 type Summary = { rickshaws: number; inspections: number; paid_bills: number; active_certificates: number; queued_notifications: number };
 type LiveVerification = { valid: boolean; certificate_number?: string; chassis_suffix?: string; zone?: string; expires_at?: string; status?: string; reason?: string };
-type InspectionTemplate = { id: string; version: string; vehicle_type: string; schema_json?: unknown; effective_from?: string; effective_to?: string | null };
+type ChecklistField = { key: string; label: string; label_bn?: string; type: 'pass_fail_na' | 'text' };
+type InspectionTemplate = { id: string; version: string; vehicle_type: string; schema_json?: { fields?: ChecklistField[] }; effective_from?: string; effective_to?: string | null };
 type Rickshaw = { id: string; chassis_number: string; motor_number?: string | null; district_id: string; zone_id: string; status: string };
 
 function App() {
@@ -30,6 +31,10 @@ function App() {
     try { return JSON.parse(localStorage.getItem('erf-inspection-templates') ?? '[]') as InspectionTemplate[]; } catch { return []; }
   });
   const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState('');
+  const activeTemplate = templates.find((template) => template.id === selectedTemplateId) ?? templates[0];
+  const activeFields = activeTemplate?.schema_json?.fields ?? [];
+  useEffect(() => { if (templates[0] && !templates.some((template) => template.id === selectedTemplateId)) setSelectedTemplateId(templates[0].id); }, [templates]);
   const [vehicleSearch, setVehicleSearch] = useState('');
   const [vehicleResult, setVehicleResult] = useState<Rickshaw | null>(null);
   const [vehicleLookupLoading, setVehicleLookupLoading] = useState(false);
@@ -84,7 +89,15 @@ function App() {
   useEffect(() => { if (view === 'admin' && token) void loadSummary(); }, [view, token]);
   async function submitInspection(form: HTMLFormElement) {
     const values = Object.fromEntries(new FormData(form));
-    const payload = { rickshaw_id: values.rickshaw_id, template_id: values.template_id, checklist_data: { brakes: values.brakes === 'pass', lights: values.lights === 'pass', notes: values.notes }, result: values.result, client_timestamp: new Date().toISOString() };
+    const checklistData: Record<string, unknown> = {};
+    for (const field of activeFields) {
+      if (field.type === 'text') { checklistData[field.key] = values[`check_${field.key}`] ?? ''; continue; }
+      const outcome = values[`check_${field.key}`];
+      const reason = String(values[`reason_${field.key}`] ?? '').trim();
+      if (outcome === 'fail' && !reason) { setMessage(`Enter a reason for the failed check: ${field.label}`); return; }
+      checklistData[field.key] = outcome === 'fail' ? { outcome, reason } : { outcome };
+    }
+    const payload = { rickshaw_id: values.rickshaw_id, template_id: values.template_id, checklist_data: activeFields.length > 0 ? checklistData : { notes: values.notes ?? '' }, result: values.result, client_timestamp: new Date().toISOString() };
     if (!navigator.onLine || !token) {
       await saveDraft(payload); await refreshPending(); setMessage('Inspection safely saved on this device. It must be synced after authenticated connectivity returns.'); return;
     }
@@ -167,9 +180,14 @@ function App() {
       <label>Access token (development only)<input value={token} onChange={(event) => setToken(event.target.value)} placeholder="Bearer token" /></label>
     )}
     {view === 'inspection' ? <section><section className="verification-panel"><h2>Vehicle registry</h2><p className="muted">Search an existing vehicle by chassis number or register one in your assigned district and zone.</p><div className="inline-form"><label>Chassis number<input value={vehicleSearch} onChange={(event) => setVehicleSearch(event.target.value)} placeholder="e.g. ER-8821" /></label><button type="button" onClick={() => void searchVehicle()} disabled={vehicleLookupLoading}>{vehicleLookupLoading ? 'Searching…' : 'Search vehicle'}</button></div>{vehicleResult ? <p className="result valid">Found: <strong>{vehicleResult.chassis_number}</strong> · UUID <code>{vehicleResult.id}</code> · Motor {vehicleResult.motor_number ?? '—'} · Status {vehicleResult.status}</p> : null}<details><summary>Register new vehicle</summary><form onSubmit={(event) => { event.preventDefault(); void registerVehicle(event.currentTarget); }}><label>Chassis number<input name="chassis_number" required /></label><label>Motor number<input name="motor_number" /></label><label>Owner phone<input name="owner_phone" required placeholder="01XXXXXXXXX" /></label><label>District UUID<input name="district_id" required /></label><label>Zone UUID<input name="zone_id" required /></label><button type="submit">Register vehicle</button></form></details></section><h2>Submit fitness inspection</h2><form onSubmit={(event) => { event.preventDefault(); void submitInspection(event.currentTarget); }}>
-      <label>Rickshaw UUID<input name="rickshaw_id" required /></label>{templates.length > 0 ? <label>Checklist template<select name="template_id" required defaultValue={templates[0].id}>{templates.map((template) => <option value={template.id} key={template.id}>{template.version} — {template.vehicle_type}</option>)}</select>{templatesLoading ? <small>Refreshing templates…</small> : <small>{navigator.onLine && token ? 'Live templates' : 'Cached templates (offline)'}</small>}</label> : <label>Checklist template UUID<input name="template_id" required placeholder="Template UUID (sync requires a published template)" /><small>No cached templates available. Connect and sign in to load the current checklist.</small></label>}
-      <label>Brakes<select name="brakes"><option value="pass">Pass</option><option value="fail">Fail</option></select></label><label>Lights<select name="lights"><option value="pass">Pass</option><option value="fail">Fail</option></select></label>
-      <label>Notes<textarea name="notes" /></label><label>Result<select name="result"><option value="pass">Pass</option><option value="fail">Fail</option></select></label>
+      <label>Rickshaw UUID<input name="rickshaw_id" required /></label>{templates.length > 0 ? <label>Checklist template<select name="template_id" required value={selectedTemplateId} onChange={(event) => setSelectedTemplateId(event.target.value)}>{templates.map((template) => <option value={template.id} key={template.id}>{template.version} — {template.vehicle_type}</option>)}</select>{templatesLoading ? <small>Refreshing templates…</small> : <small>{navigator.onLine && token ? 'Live templates' : 'Cached templates (offline)'}</small>}</label> : <label>Checklist template UUID<input name="template_id" required placeholder="Template UUID (sync requires a published template)" /><small>No cached templates available. Connect and sign in to load the current checklist.</small></label>}
+      {activeFields.length > 0 ? activeFields.map((field) => field.type === 'text'
+        ? <label key={field.key}>{field.label}{field.label_bn ? <span className="muted"> ({field.label_bn})</span> : null}<textarea name={`check_${field.key}`} /></label>
+        : <div className="checklist-field" key={field.key}>
+            <label>{field.label}{field.label_bn ? <span className="muted"> ({field.label_bn})</span> : null}<select name={`check_${field.key}`} defaultValue="pass"><option value="pass">Pass</option><option value="fail">Fail</option><option value="na">N/A</option></select></label>
+            <label>Reason if failed<input name={`reason_${field.key}`} placeholder="Required only if this check failed" /></label>
+          </div>) : <label>Notes<textarea name="notes" /></label>}
+      <label>Result<select name="result"><option value="pass">Pass</option><option value="fail">Fail</option></select></label>
       <button type="submit">Submit / save offline</button><button type="button" onClick={() => void syncDrafts()}>Sync saved inspections</button>
     </form></section> : view === 'verification' ? <section><h2>Certificate verification</h2><p className="muted">Offline signature verification works without internet. Live lookup checks the current certificate status and revocation state.</p><div className="verification-panel"><h3>Offline QR signature</h3><label>QR payload<textarea value={certificate} onChange={(event) => setCertificate(event.target.value)} placeholder="ERF1...." /></label><button onClick={() => void verifyCertificate()}>Verify signature offline</button><p className="result">{verification || 'No offline verification performed yet.'}</p></div><div className="verification-panel"><h3>Live certificate status</h3><label>Certificate short code<input value={shortCode} onChange={(event) => setShortCode(event.target.value)} placeholder="e.g. X9K2L" /></label><button onClick={() => void lookupShortCode()} disabled={liveVerificationLoading}>{liveVerificationLoading ? 'Checking…' : 'Check live status'}</button>{liveVerification ? <p className={`result ${liveVerification.valid ? 'valid' : 'invalid'}`}>{liveVerification.valid ? `Active certificate ${liveVerification.certificate_number ?? ''}. Zone: ${liveVerification.zone ?? '—'}. Chassis: ••••${liveVerification.chassis_suffix ?? '—'}. Expires: ${liveVerification.expires_at ? new Date(liveVerification.expires_at).toLocaleDateString() : '—'}.` : `Live status: ${liveVerification.status ?? 'not valid'}. ${liveVerification.reason ?? 'Certificate is inactive, expired, or not found.'}`}</p> : <p className="muted">No live lookup performed yet.</p>}</div></section> : <>
       <section><h2>Provision OIDC user</h2><p>Central administrator access is required.</p><form onSubmit={(event) => { event.preventDefault(); void provisionUser(event.currentTarget); }}><label>External identity subject<input name="external_subject" required placeholder="identity-provider subject" /></label><label>Display name<input name="display_name" required /></label><label>Role<select name="role"><option value="inspector">Inspector</option><option value="hub_supervisor">Hub supervisor</option><option value="district_administrator">District administrator</option><option value="finance_operator">Finance operator</option><option value="traffic_police_verifier">Traffic police verifier</option></select></label><label>District UUID<input name="district_id" /></label><label>Zone UUID<input name="zone_id" /></label><button type="submit">Provision user</button></form></section>
