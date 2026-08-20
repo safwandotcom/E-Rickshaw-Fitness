@@ -44,6 +44,7 @@ const userProvisionInput = z.object({
   scopes: z.array(z.object({ district_id: z.string().uuid(), zone_id: z.string().uuid() })).default([])
 });
 const smsStatusInput = z.object({ provider_message_id: z.string().min(1), status: z.enum(['delivered', 'failed']), error: z.string().max(500).optional() });
+const templateInput = z.object({ version: z.string().trim().min(1).max(64), vehicle_type: z.string().trim().min(1).max(64), schema_json: z.record(z.unknown()), effective_from: z.string().datetime(), effective_to: z.string().datetime().optional() });
 
 function parseJson(request: FastifyRequest): unknown {
   if (typeof request.body !== 'string') throw new Error('Expected a JSON request body.');
@@ -155,6 +156,15 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
     await principalFor(request, config, oidc, db);
     const templates = await db.query('SELECT id, version, vehicle_type, schema_json, effective_from, effective_to FROM inspection_templates WHERE active = true AND effective_from <= now() AND (effective_to IS NULL OR effective_to > now()) ORDER BY effective_from DESC');
     return { data: templates.rows };
+  });
+
+  app.post('/api/v1/admin/inspection-templates', async (request, reply) => {
+    const principal = await principalFor(request, config, oidc, db);
+    requireRole(principal, ['central_administrator']);
+    const input = templateInput.parse(parseJson(request));
+    const result = await db.query<{ id: string; version: string }>('INSERT INTO inspection_templates (version, vehicle_type, schema_json, effective_from, effective_to) VALUES ($1, $2, $3, $4, $5) RETURNING id, version', [input.version, input.vehicle_type, input.schema_json, input.effective_from, input.effective_to ?? null]);
+    await audit(db, principal.userId, 'inspection_template.created', 'inspection_template', result.rows[0].id, request);
+    return reply.code(201).send({ data: result.rows[0] });
   });
 
   app.post('/api/v1/inspections', async (request, reply) => {
