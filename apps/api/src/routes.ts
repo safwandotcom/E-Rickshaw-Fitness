@@ -6,6 +6,7 @@ import { Database } from './db.js';
 import { DevelopmentQrSigner, FieldCipher } from './lib/crypto.js';
 import { AuthorizationError, type Principal, type Role, requireRole, requireZoneAccess } from './lib/authorization.js';
 import { OidcVerifier } from './lib/oidc.js';
+import { renderCertificatePdf } from './lib/certificate-pdf.js';
 
 declare module '@fastify/jwt' {
   interface FastifyJWT {
@@ -244,6 +245,14 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
     const certificate = result.rows[0];
     if (!certificate) return reply.code(404).send({ data: { valid: false, reason: 'not_found' } });
     return { data: { valid: certificate.status === 'active' && certificate.expires_at > new Date(), certificate_number: certificate.certificate_number, chassis_suffix: certificate.chassis_number.slice(-4), zone: certificate.zone, expires_at: certificate.expires_at, status: certificate.status } };
+  });
+  app.get('/api/v1/public/certificates/:shortCode.pdf', async (request, reply) => {
+    const shortCode = z.string().min(1).max(32).parse((request.params as { shortCode: string }).shortCode);
+    const result = await db.query<{ certificate_number: string; expires_at: Date; status: string; chassis_number: string; zone: string }>("SELECT c.certificate_number, c.expires_at, c.status, r.chassis_number, z.code AS zone FROM certificates c JOIN rickshaws r ON r.id = c.rickshaw_id JOIN zones z ON z.id = r.zone_id WHERE c.short_code = $1", [shortCode]);
+    const certificate = result.rows[0];
+    if (!certificate) return reply.code(404).send({ data: { found: false } });
+    const pdf = await renderCertificatePdf({ certificateNumber: certificate.certificate_number, chassisSuffix: certificate.chassis_number.slice(-4), zone: certificate.zone, status: certificate.status, expiresAt: certificate.expires_at, verificationUrl: `/api/v1/public/verify/${shortCode}` });
+    return reply.header('Content-Type', 'application/pdf').header('Content-Disposition', `inline; filename="${certificate.certificate_number}.pdf"`).send(pdf);
   });
 
   app.setErrorHandler((error, request, reply) => {
