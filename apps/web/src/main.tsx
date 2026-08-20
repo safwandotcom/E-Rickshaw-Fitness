@@ -80,13 +80,21 @@ function App() {
   // An OIDC id_token is typically short-lived (minutes, not hours). Without
   // this, an expired token just fails silently on the next API call with a
   // generic "Could not load..." message instead of prompting re-sign-in.
+  function clearSession(reason: string) {
+    setToken('');
+    setTokenExpiresAt(null);
+    setMessage(reason);
+  }
   useEffect(() => {
     if (!tokenExpiresAt) return;
     const delay = tokenExpiresAt - Date.now();
-    if (delay <= 0) { setToken(''); setTokenExpiresAt(null); setMessage(t('sessionExpiredMessage')); return; }
-    const timer = setTimeout(() => { setToken(''); setTokenExpiresAt(null); setMessage(t('sessionExpiredMessage')); }, delay);
+    if (delay <= 0) { clearSession(t('sessionExpiredMessage')); return; }
+    const timer = setTimeout(() => clearSession(t('sessionExpiredMessage')), delay);
     return () => clearTimeout(timer);
-  }, [tokenExpiresAt]);
+    // `language` is a real dependency, not just `tokenExpiresAt`: t() closes
+    // over it, and without this the expiry message could fire in whatever
+    // language was active when the timer was *set*, not when it *fires*.
+  }, [tokenExpiresAt, language]);
 
   const auth = useMemo<Record<string, string>>(() => token ? { Authorization: `Bearer ${token}` } : ({} as Record<string, string>), [token]);
   async function loadTemplates() {
@@ -223,7 +231,7 @@ function App() {
     {oidcConfig ? (
       <section className="auth-panel">
         {token
-          ? <p className="result valid">Signed in. <button type="button" onClick={() => { setToken(''); setTokenExpiresAt(null); setMessage(t('signedOutMessage')); }}>{t('signOut')}</button></p>
+          ? <p className="result valid">Signed in. <button type="button" onClick={() => clearSession(t('signedOutMessage'))}>{t('signOut')}</button></p>
           : <button type="button" onClick={() => void beginSignIn(oidcConfig)} disabled={signingIn}>{signingIn ? t('completingSignIn') : t('signInWithAuthority')}</button>}
       </section>
     ) : (

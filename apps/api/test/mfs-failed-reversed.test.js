@@ -167,3 +167,39 @@ test('reversed MFS callback with an amount that does not match the recorded paym
   assert.equal(response.statusCode, 409);
   await app.close();
 });
+
+test('reversed MFS callback for a bill whose certificate predates bill_id tracking does not touch an unrelated certificate', async () => {
+  // No certificate matches bill_id (it was issued before
+  // 0013_certificate_bill_lineage.sql started populating it — legacy rows
+  // stay NULL). The handler must not fall back to "revoke whatever is
+  // active for the rickshaw", which is the exact bug this bill_id lookup
+  // exists to avoid; it should accept the reversal without mutating any
+  // certificate or rickshaw row.
+  const calls = [];
+  const db = {
+    async ready() { return true; },
+    async query(sql) { if (sql.startsWith('INSERT INTO audit_events')) return { rows: [] }; throw new Error(`Unexpected top-level query: ${sql}`); },
+    async transaction(work) {
+      return work({
+        async query(sql) {
+          calls.push(sql);
+          if (sql.includes('FROM payments WHERE provider')) return { rows: [{ id: 'payment-1', bill_id: 'bill-legacy', status: 'paid', amount_paisa: '50000' }] };
+          if (sql.startsWith("UPDATE payments SET status = 'reversed'")) return { rows: [] };
+          if (sql.startsWith("UPDATE bills SET status = 'reversed'")) return { rows: [] };
+          if (sql.startsWith('SELECT rickshaw_id FROM bills')) return { rows: [{ rickshaw_id: 'rick-legacy' }] };
+          if (sql.includes('FROM certificates WHERE bill_id')) return { rows: [] };
+          if (sql.includes('bill_id IS NULL')) return { rows: [{ id: 'legacy-cert-1' }] };
+          throw new Error(`Unexpected transaction query: ${sql}`);
+        }
+      });
+    }
+  };
+  const app = await buildApp(config, db);
+  const body = JSON.stringify({ event_id: 'evt-r4', bill_code: '902195', transaction_id: 'trx-legacy-1', amount_paisa: 50000, status: 'reversed' });
+  const headers = { 'content-type': 'application/json', 'x-erf-signature': signed(body, config.MFS_WEBHOOK_SECRET) };
+  const response = await app.inject({ method: 'POST', url: '/api/v1/webhooks/mfs/bkash', headers, payload: body });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), { data: { accepted: true, outcome: 'reversed', duplicate: false } });
+  assert.ok(!calls.some((sql) => sql.startsWith('UPDATE certificates') || sql.startsWith('UPDATE rickshaws') || sql.startsWith('INSERT INTO certificate_revocations')));
+  await app.close();
+});

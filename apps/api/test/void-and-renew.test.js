@@ -32,10 +32,11 @@ test('voiding an inspection expires its unpaid bill and reverts the rickshaw to 
       return work({
         async query(sql, values) {
           calls.push(sql.split('\n')[0].trim());
-          if (sql.startsWith('SELECT i.status')) return { rows: [{ status: 'passed', rickshaw_id: 'rickshaw-1', district_id: districtId, zone_id: zoneId, rickshaw_status: 'pre_approved' }] };
+          if (sql.startsWith('SELECT i.status')) return { rows: [{ status: 'passed', rickshaw_id: 'rickshaw-1', district_id: districtId, zone_id: zoneId }] };
           if (sql.startsWith('UPDATE inspections')) { assert.equal(values[1], 'documentation error'); return { rows: [] }; }
           if (sql.startsWith('UPDATE bills')) return { rows: [] };
           if (sql.startsWith('UPDATE rickshaws')) return { rows: [] };
+          if (sql.includes('JOIN bills b ON b.id = c.bill_id')) return { rows: [] };
           throw new Error(`Unexpected transaction query: ${sql}`);
         }
       });
@@ -49,7 +50,7 @@ test('voiding an inspection expires its unpaid bill and reverts the rickshaw to 
     payload: JSON.stringify({ reason_code: 'documentation error' })
   });
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.json(), { data: { voided: true, certificate_action_required: false } });
+  assert.deepEqual(response.json(), { data: { voided: true, certificate_action_required: false, certificate_short_code: null } });
   assert.ok(calls.some((sql) => sql.startsWith('UPDATE bills')));
   assert.ok(calls.some((sql) => sql.startsWith('UPDATE rickshaws')));
   await app.close();
@@ -62,10 +63,11 @@ test('voiding an inspection behind an already-certified rickshaw flags that cert
     async transaction(work) {
       return work({
         async query(sql) {
-          if (sql.startsWith('SELECT i.status')) return { rows: [{ status: 'passed', rickshaw_id: 'rickshaw-1', district_id: districtId, zone_id: zoneId, rickshaw_status: 'certified' }] };
+          if (sql.startsWith('SELECT i.status')) return { rows: [{ status: 'passed', rickshaw_id: 'rickshaw-1', district_id: districtId, zone_id: zoneId }] };
           if (sql.startsWith('UPDATE inspections')) return { rows: [] };
           if (sql.startsWith('UPDATE bills')) return { rows: [] };
           if (sql.startsWith('UPDATE rickshaws')) return { rows: [] };
+          if (sql.includes('JOIN bills b ON b.id = c.bill_id')) return { rows: [{ id: 'certificate-1', short_code: 'CERT01' }] };
           throw new Error(`Unexpected transaction query: ${sql}`);
         }
       });
@@ -79,7 +81,41 @@ test('voiding an inspection behind an already-certified rickshaw flags that cert
     payload: JSON.stringify({ reason_code: 'fraudulent approval' })
   });
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.json(), { data: { voided: true, certificate_action_required: true } });
+  assert.deepEqual(response.json(), { data: { voided: true, certificate_action_required: true, certificate_short_code: 'CERT01' } });
+  await app.close();
+});
+
+test('voiding an unrelated failed inspection does not flag a certified rickshaw\'s active certificate', async () => {
+  // The rickshaw is certified from a different, earlier passing inspection.
+  // The one being voided here never produced a bill or certificate, so
+  // there is no row in `bills` with inspection_id = this inspection's id —
+  // the certificate lookup must find nothing, regardless of the
+  // rickshaw's current status.
+  const db = {
+    async ready() { return true; },
+    async query(sql) { if (sql.startsWith('INSERT INTO audit_events')) return { rows: [] }; throw new Error(`Unexpected top-level query: ${sql}`); },
+    async transaction(work) {
+      return work({
+        async query(sql) {
+          if (sql.startsWith('SELECT i.status')) return { rows: [{ status: 'failed', rickshaw_id: 'rickshaw-1', district_id: districtId, zone_id: zoneId }] };
+          if (sql.startsWith('UPDATE inspections')) return { rows: [] };
+          if (sql.startsWith('UPDATE bills')) return { rows: [] };
+          if (sql.startsWith('UPDATE rickshaws')) return { rows: [] };
+          if (sql.includes('JOIN bills b ON b.id = c.bill_id')) return { rows: [] };
+          throw new Error(`Unexpected transaction query: ${sql}`);
+        }
+      });
+    }
+  };
+  const app = await buildApp(config, db);
+  const token = await tokenWithScope(app, ['hub_supervisor']);
+  const response = await app.inject({
+    method: 'POST', url: '/api/v1/inspections/11111111-1111-1111-1111-111111111111/void',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    payload: JSON.stringify({ reason_code: 'duplicate submission' })
+  });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), { data: { voided: true, certificate_action_required: false, certificate_short_code: null } });
   await app.close();
 });
 

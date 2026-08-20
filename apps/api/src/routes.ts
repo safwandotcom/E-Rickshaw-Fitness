@@ -271,8 +271,8 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
     const inspectionId = z.string().uuid().parse((request.params as { id: string }).id);
     const input = reasonInput.parse(parseJson(request));
     const outcome = await db.transaction(async (transaction) => {
-      const inspection = await transaction.query<{ status: string; rickshaw_id: string; district_id: string; zone_id: string; rickshaw_status: string }>(
-        'SELECT i.status, i.rickshaw_id, r.district_id, r.zone_id, r.status AS rickshaw_status FROM inspections i JOIN rickshaws r ON r.id = i.rickshaw_id WHERE i.id = $1 FOR UPDATE', [inspectionId]
+      const inspection = await transaction.query<{ status: string; rickshaw_id: string; district_id: string; zone_id: string }>(
+        'SELECT i.status, i.rickshaw_id, r.district_id, r.zone_id FROM inspections i JOIN rickshaws r ON r.id = i.rickshaw_id WHERE i.id = $1 FOR UPDATE', [inspectionId]
       );
       const row = inspection.rows[0];
       if (!row) return { outcome: 'not_found' as const };
@@ -288,13 +288,26 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
       // instead so the caller knows manual follow-up is required.
       await transaction.query("UPDATE bills SET status = 'expired' WHERE inspection_id = $1 AND status = 'unpaid'", [inspectionId]);
       await transaction.query("UPDATE rickshaws SET status = 'pending', updated_at = now() WHERE id = $1 AND status = 'pre_approved'", [row.rickshaw_id]);
-      return { outcome: 'voided' as const, certificateActionRequired: row.rickshaw_status === 'certified' };
+      // The rickshaw's current status alone isn't enough to decide this: it
+      // could be 'certified' from a completely unrelated inspection (this
+      // one voided, that one still valid). Trace precisely instead — the
+      // certificate's bill_id (which propagates through renewals) points
+      // back to the exact bill, and the bill to the exact inspection, that
+      // produced it.
+      const certificate = await transaction.query<{ id: string; short_code: string }>(
+        "SELECT c.id, c.short_code FROM certificates c JOIN bills b ON b.id = c.bill_id WHERE b.inspection_id = $1 AND c.status = 'active'", [inspectionId]
+      );
+      return { outcome: 'voided' as const, certificate: certificate.rows[0] ?? null };
     });
     if (outcome.outcome === 'not_found') return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Inspection not found.', request_id: request.id } });
     if (outcome.outcome === 'invalid_state') return reply.code(409).send({ error: { code: 'INVALID_STATE', message: 'Only a passed or failed inspection can be voided.', request_id: request.id } });
     if (outcome.outcome === 'already_voided') return { data: { voided: true, duplicate: true } };
-    await audit(db, principal.userId, 'inspection.voided', 'inspection', inspectionId, request);
-    return { data: { voided: true, certificate_action_required: outcome.certificateActionRequired } };
+    const certificateActionRequired = outcome.certificate !== null;
+    // Recorded on the audit event itself (not just the HTTP response) so a
+    // manual-follow-up flag can't be lost if the caller doesn't act on it
+    // synchronously — it stays queryable in audit_events.
+    await audit(db, principal.userId, 'inspection.voided', 'inspection', inspectionId, request, { certificate_action_required: certificateActionRequired, certificate_short_code: outcome.certificate?.short_code ?? null });
+    return { data: { voided: true, certificate_action_required: certificateActionRequired, certificate_short_code: outcome.certificate?.short_code ?? null } };
   });
 
   app.post('/api/v1/webhooks/mfs/:provider', async (request, reply) => {
@@ -364,6 +377,15 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
         await transaction.query("UPDATE certificates SET status = 'revoked' WHERE id = $1", [certificate.rows[0].id]);
         if (rickshawId) await transaction.query("UPDATE rickshaws SET status = 'suspended', updated_at = now() WHERE id = $1", [rickshawId]);
         await transaction.query('INSERT INTO certificate_revocations (certificate_id, reason_code, revoked_by) VALUES ($1, $2, NULL)', [certificate.rows[0].id, 'payment_reversed']);
+      } else if (rickshawId) {
+        // certificates.bill_id is only populated going forward (see
+        // 0013_certificate_bill_lineage.sql) — a certificate issued before
+        // that migration has bill_id NULL and can't be matched here. Don't
+        // guess by falling back to "whatever is active for the rickshaw"
+        // (that's the exact bug this bill_id lookup exists to avoid); flag
+        // it for manual reconciliation instead of silently doing nothing.
+        const legacyCertificate = await transaction.query<{ id: string }>("SELECT id FROM certificates WHERE rickshaw_id = $1 AND status = 'active' AND bill_id IS NULL", [rickshawId]);
+        if (legacyCertificate.rows[0]) request.log.warn({ rickshawId, billId: row.bill_id, certificateId: legacyCertificate.rows[0].id }, 'payment reversed but the active certificate predates bill_id lineage tracking; revoke it manually if this reversal applies to it');
       }
       return { duplicate: false as const, billId: row.bill_id };
     });
@@ -477,6 +499,6 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
   });
 }
 
-async function audit(db: Database, actorId: string | null, action: string, entityType: string, entityId: string, request: FastifyRequest): Promise<void> {
-  await db.query('INSERT INTO audit_events (actor_id, action, entity_type, entity_id, request_id, ip) VALUES ($1, $2, $3, $4, $5, $6)', [actorId, action, entityType, entityId, request.id, request.ip]);
+async function audit(db: Database, actorId: string | null, action: string, entityType: string, entityId: string, request: FastifyRequest, afterJson: Record<string, unknown> | null = null): Promise<void> {
+  await db.query('INSERT INTO audit_events (actor_id, action, entity_type, entity_id, request_id, ip, after_json) VALUES ($1, $2, $3, $4, $5, $6, $7)', [actorId, action, entityType, entityId, request.id, request.ip, afterJson]);
 }

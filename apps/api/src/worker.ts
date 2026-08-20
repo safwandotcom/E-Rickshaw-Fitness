@@ -71,13 +71,25 @@ interface DomainEventMessage {
   occurred_at: string;
 }
 
-// Superseded by erf.domain-events below. A broker that already ran the
-// previous worker still has this queue durably declared with its old
-// bindings, which would otherwise keep silently accumulating unconsumed
-// 'payment.instructions.requested'/'certificate.issued' messages forever
-// on any environment that upgrades rather than starting from an empty
-// broker. queue.delete is a no-op if the queue was never created.
-await channel.deleteQueue('erf.notifications').catch(() => undefined);
+// One-time compatibility cleanup, safe to delete once no environment can
+// plausibly still be running the pre-this-change worker. Superseded by
+// erf.domain-events below: a broker that already ran the previous worker
+// still has this queue durably declared with its old bindings, which
+// would otherwise keep silently accumulating unconsumed
+// 'payment.instructions.requested'/'certificate.issued' messages forever.
+//
+// Done on its own disposable channel, not the shared `channel` used
+// below: queue.delete on a queue that was never created raises an
+// AMQP channel-level error, which closes whichever channel it's called
+// on — reusing `channel` here would have taken down every subsequent
+// assertExchange/assertQueue/consume call on a fresh broker.
+try {
+  const cleanupChannel = await connection.createChannel();
+  await cleanupChannel.deleteQueue('erf.notifications');
+  await cleanupChannel.close();
+} catch (error) {
+  if (!(error instanceof Error) || !/NOT_FOUND/i.test(error.message)) console.error('legacy queue cleanup failed', error);
+}
 
 await channel.assertExchange('erf.dlx', 'fanout', { durable: true });
 await channel.assertQueue('erf.domain-events', { durable: true, deadLetterExchange: 'erf.dlx' });
