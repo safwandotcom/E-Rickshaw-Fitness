@@ -1,30 +1,28 @@
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
+import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import type { AppConfig } from '../config.js';
-import type { Principal, Role } from './authorization.js';
+
+/** The identity established by a verified OIDC token. Roles and geographic
+ * scope are never taken from token claims — the authority's identity
+ * provider is not expected to emit application-specific claims, and doing
+ * so would let a token holder self-assert privileges. They are always
+ * looked up from the local `user_roles`/`user_geographies` provisioning
+ * tables by the caller, keyed on this subject. */
+export interface OidcIdentity {
+  userId: string;
+}
 
 export class OidcVerifier {
-  private readonly keys: ReturnType<typeof createRemoteJWKSet>;
+  private readonly keys: JWTVerifyGetKey;
 
-  constructor(private readonly config: AppConfig) {
-    this.keys = createRemoteJWKSet(new URL(`${config.OIDC_ISSUER_URL!.replace(/\/$/, '')}/.well-known/jwks.json`));
+  /** `keys` is injectable so tests can verify against a local JWK set
+   * instead of fetching a real provider's `.well-known/jwks.json`. */
+  constructor(private readonly config: AppConfig, keys?: JWTVerifyGetKey) {
+    this.keys = keys ?? createRemoteJWKSet(new URL(`${config.OIDC_ISSUER_URL!.replace(/\/$/, '')}/.well-known/jwks.json`));
   }
 
-  async verify(token: string): Promise<Principal> {
+  async verify(token: string): Promise<OidcIdentity> {
     const result = await jwtVerify(token, this.keys, { issuer: this.config.OIDC_ISSUER_URL, audience: this.config.OIDC_AUDIENCE });
-    return claimsToPrincipal(result.payload);
+    if (typeof result.payload.sub !== 'string' || !result.payload.sub) throw new Error('OIDC token is missing subject.');
+    return { userId: result.payload.sub };
   }
-}
-
-function claimsToPrincipal(payload: JWTPayload): Principal {
-  if (!payload.sub) throw new Error('OIDC token is missing subject.');
-  const roles = Array.isArray(payload.roles) ? payload.roles.filter(isRole) : [];
-  if (!roles.length) throw new Error('OIDC token contains no recognized roles.');
-  const districtIds = Array.isArray(payload.district_ids) ? payload.district_ids.filter(isString) : [];
-  const zoneIds = Array.isArray(payload.zone_ids) ? payload.zone_ids.filter(isString) : [];
-  return { userId: payload.sub, roles, scope: { districtIds, zoneIds } };
-}
-
-function isString(value: unknown): value is string { return typeof value === 'string'; }
-function isRole(value: unknown): value is Role {
-  return ['inspector', 'hub_supervisor', 'district_administrator', 'central_administrator', 'finance_operator', 'traffic_police_verifier'].includes(String(value));
 }

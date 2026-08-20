@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { beginSignIn, completeSignIn, readOidcConfig } from './auth';
 import { drafts, removeDraft, saveDraft } from './offline';
 import { verifyOffline } from './qr';
 import './styles.css';
@@ -32,9 +33,25 @@ function App() {
   const [vehicleSearch, setVehicleSearch] = useState('');
   const [vehicleResult, setVehicleResult] = useState<Rickshaw | null>(null);
   const [vehicleLookupLoading, setVehicleLookupLoading] = useState(false);
+  const oidcConfig = useMemo(() => readOidcConfig(), []);
+  const [signingIn, setSigningIn] = useState(false);
 
   async function refreshPending() { setPending((await drafts()).length); }
-  useEffect(() => { void refreshPending(); if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/service-worker.js'); }, []);
+  useEffect(() => {
+    void refreshPending();
+    if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/service-worker.js');
+    if (!oidcConfig || !window.location.search.includes('code=')) return;
+    setSigningIn(true);
+    completeSignIn(oidcConfig, window.location.search)
+      .then((result) => {
+        if (!result) return;
+        setToken(result.idToken);
+        setMessage('Signed in through the authority identity provider.');
+        window.history.replaceState(null, '', window.location.pathname);
+      })
+      .catch((error) => setMessage(`Sign-in failed: ${error instanceof Error ? error.message : 'unknown error'}`))
+      .finally(() => setSigningIn(false));
+  }, []);
 
   const auth = useMemo<Record<string, string>>(() => token ? { Authorization: `Bearer ${token}` } : ({} as Record<string, string>), [token]);
   async function loadTemplates() {
@@ -140,7 +157,15 @@ function App() {
     <header><h1>E-Rickshaw Fitness</h1><p>Inspector & roadside verification PWA</p></header>
     <nav><button onClick={() => setView('inspection')}>Inspection</button><button onClick={() => setView('verification')}>Verify QR</button><button onClick={() => setView('admin')}>Admin</button></nav>
     <section className="notice">{message} Offline queue: {pending}</section>
-    <label>Access token (development only)<input value={token} onChange={(event) => setToken(event.target.value)} placeholder="Bearer token" /></label>
+    {oidcConfig ? (
+      <section className="auth-panel">
+        {token
+          ? <p className="result valid">Signed in. <button type="button" onClick={() => { setToken(''); setMessage('Signed out.'); }}>Sign out</button></p>
+          : <button type="button" onClick={() => void beginSignIn(oidcConfig)} disabled={signingIn}>{signingIn ? 'Completing sign-in…' : 'Sign in with authority identity'}</button>}
+      </section>
+    ) : (
+      <label>Access token (development only)<input value={token} onChange={(event) => setToken(event.target.value)} placeholder="Bearer token" /></label>
+    )}
     {view === 'inspection' ? <section><section className="verification-panel"><h2>Vehicle registry</h2><p className="muted">Search an existing vehicle by chassis number or register one in your assigned district and zone.</p><div className="inline-form"><label>Chassis number<input value={vehicleSearch} onChange={(event) => setVehicleSearch(event.target.value)} placeholder="e.g. ER-8821" /></label><button type="button" onClick={() => void searchVehicle()} disabled={vehicleLookupLoading}>{vehicleLookupLoading ? 'Searching…' : 'Search vehicle'}</button></div>{vehicleResult ? <p className="result valid">Found: <strong>{vehicleResult.chassis_number}</strong> · UUID <code>{vehicleResult.id}</code> · Motor {vehicleResult.motor_number ?? '—'} · Status {vehicleResult.status}</p> : null}<details><summary>Register new vehicle</summary><form onSubmit={(event) => { event.preventDefault(); void registerVehicle(event.currentTarget); }}><label>Chassis number<input name="chassis_number" required /></label><label>Motor number<input name="motor_number" /></label><label>Owner phone<input name="owner_phone" required placeholder="01XXXXXXXXX" /></label><label>District UUID<input name="district_id" required /></label><label>Zone UUID<input name="zone_id" required /></label><button type="submit">Register vehicle</button></form></details></section><h2>Submit fitness inspection</h2><form onSubmit={(event) => { event.preventDefault(); void submitInspection(event.currentTarget); }}>
       <label>Rickshaw UUID<input name="rickshaw_id" required /></label>{templates.length > 0 ? <label>Checklist template<select name="template_id" required defaultValue={templates[0].id}>{templates.map((template) => <option value={template.id} key={template.id}>{template.version} — {template.vehicle_type}</option>)}</select>{templatesLoading ? <small>Refreshing templates…</small> : <small>{navigator.onLine && token ? 'Live templates' : 'Cached templates (offline)'}</small>}</label> : <label>Checklist template UUID<input name="template_id" required placeholder="Template UUID (sync requires a published template)" /><small>No cached templates available. Connect and sign in to load the current checklist.</small></label>}
       <label>Brakes<select name="brakes"><option value="pass">Pass</option><option value="fail">Fail</option></select></label><label>Lights<select name="lights"><option value="pass">Pass</option><option value="fail">Fail</option></select></label>
