@@ -36,6 +36,12 @@ const callbackInput = z.object({
   status: z.literal('paid')
 });
 const revocationInput = z.object({ reason_code: z.string().trim().min(2).max(64) });
+const userProvisionInput = z.object({
+  external_subject: z.string().trim().min(2).max(256),
+  display_name: z.string().trim().min(2).max(160),
+  roles: z.array(z.enum(['inspector', 'hub_supervisor', 'district_administrator', 'central_administrator', 'finance_operator', 'traffic_police_verifier'])).min(1),
+  scopes: z.array(z.object({ district_id: z.string().uuid(), zone_id: z.string().uuid() })).default([])
+});
 
 function parseJson(request: FastifyRequest): unknown {
   if (typeof request.body !== 'string') throw new Error('Expected a JSON request body.');
@@ -76,6 +82,27 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
     if (config.NODE_ENV !== 'development') return reply.code(404).send();
     const input = z.object({ user_id: z.string().uuid(), roles: z.array(z.enum(['inspector', 'hub_supervisor', 'district_administrator', 'central_administrator', 'finance_operator', 'traffic_police_verifier'])).min(1), district_ids: z.array(z.string().uuid()), zone_ids: z.array(z.string().uuid()) }).parse(parseJson(request));
     return { access_token: await reply.jwtSign({ userId: input.user_id, roles: input.roles, scope: { districtIds: input.district_ids, zoneIds: input.zone_ids } }), token_type: 'Bearer' };
+  });
+
+  app.post('/api/v1/admin/users', async (request, reply) => {
+    const principal = await principalFor(request, config, oidc, db);
+    requireRole(principal, ['central_administrator']);
+    const input = userProvisionInput.parse(parseJson(request));
+    const userId = await db.transaction(async (transaction) => {
+      const user = await transaction.query<{ id: string }>("INSERT INTO users (external_subject, display_name) VALUES ($1, $2) ON CONFLICT (external_subject) DO UPDATE SET display_name = EXCLUDED.display_name, status = 'active', updated_at = now() RETURNING id", [input.external_subject, input.display_name]);
+      const id = user.rows[0].id;
+      await transaction.query('DELETE FROM user_roles WHERE user_id = $1', [id]);
+      await transaction.query('DELETE FROM user_geographies WHERE user_id = $1', [id]);
+      for (const role of input.roles) await transaction.query('INSERT INTO user_roles (user_id, role_code) VALUES ($1, $2)', [id, role]);
+      for (const scope of input.scopes) {
+        const zone = await transaction.query<{ valid: boolean }>('SELECT EXISTS (SELECT 1 FROM zones WHERE id = $1 AND district_id = $2) AS valid', [scope.zone_id, scope.district_id]);
+        if (!zone.rows[0]?.valid) throw new Error('A geographic scope references a zone outside its district.');
+        await transaction.query('INSERT INTO user_geographies (user_id, district_id, zone_id) VALUES ($1, $2, $3)', [id, scope.district_id, scope.zone_id]);
+      }
+      return id;
+    });
+    await audit(db, principal.userId, 'user.provisioned', 'user', userId, request);
+    return reply.code(201).send({ data: { user_id: userId, external_subject: input.external_subject, roles: input.roles, scopes: input.scopes } });
   });
 
   app.get('/api/v1/rickshaws', async (request) => {
