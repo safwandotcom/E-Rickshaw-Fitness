@@ -1,0 +1,204 @@
+openapi: 3.1.0
+info:
+  title: E-Rickshaw Fitness API
+  version: 1.0.0
+  description: Inspection, payment, certificate and offline-verification API.
+servers:
+  - url: https://api.example.invalid
+    description: Replace with the staging or production API origin
+tags:
+  - name: Auth
+  - name: Rickshaws
+  - name: Inspections
+  - name: Admin
+  - name: Webhooks
+  - name: Verification
+security:
+  - bearerAuth: []
+paths:
+  /api/v1/auth/dev-token:
+    post:
+      tags: [Auth]
+      summary: Issue a development JWT (development only)
+      security: []
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/DevTokenRequest' } } }
+      responses:
+        '200':
+          description: Development bearer token
+          content: { application/json: { schema: { $ref: '#/components/schemas/TokenResponse' } } }
+        '404': { description: Disabled outside development }
+  /api/v1/admin/users:
+    post:
+      tags: [Admin]
+      summary: Provision or update an OIDC user
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/UserProvisionRequest' } } }
+      responses:
+        '201': { description: Provisioned user, content: { application/json: { schema: { $ref: '#/components/schemas/UserProvisionResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/rickshaws:
+    get:
+      tags: [Rickshaws]
+      summary: Look up a rickshaw by chassis number
+      parameters:
+        - { $ref: '#/components/parameters/ChassisNumber' }
+      responses:
+        '200': { description: Vehicle or null, content: { application/json: { schema: { $ref: '#/components/schemas/RickshawLookupResponse' } } } }
+    post:
+      tags: [Rickshaws]
+      summary: Register a rickshaw
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/RickshawRequest' } } }
+      responses:
+        '201': { description: Created vehicle, content: { application/json: { schema: { $ref: '#/components/schemas/RickshawCreatedResponse' } } } }
+  /api/v1/inspections/templates/current:
+    get:
+      tags: [Inspections]
+      summary: List currently effective inspection templates
+      responses:
+        '200': { description: Templates, content: { application/json: { schema: { $ref: '#/components/schemas/TemplateListResponse' } } } }
+  /api/v1/admin/inspection-templates:
+    post:
+      tags: [Admin]
+      summary: Publish an inspection template
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/TemplateRequest' } } }
+      responses:
+        '201': { description: Published template, content: { application/json: { schema: { $ref: '#/components/schemas/TemplateCreatedResponse' } } } }
+  /api/v1/inspections:
+    post:
+      tags: [Inspections]
+      summary: Submit an inspection (idempotent for offline retries)
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/InspectionRequest' } } }
+      responses:
+        '201': { description: Submitted inspection, content: { application/json: { schema: { $ref: '#/components/schemas/InspectionResponse' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409': { description: Idempotency conflict or request in progress }
+  /api/v1/webhooks/mfs/{provider}:
+    post:
+      tags: [Webhooks]
+      summary: Receive a signed MFS payment callback
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/Provider' }
+        - { $ref: '#/components/parameters/WebhookSignature' }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/MfsCallback' } } }
+      responses:
+        '200': { description: Accepted or duplicate payment }
+        '401': { $ref: '#/components/responses/InvalidSignature' }
+        '409': { description: Payment did not match an unpaid bill }
+  /api/v1/webhooks/sms/{provider}:
+    post:
+      tags: [Webhooks]
+      summary: Receive a signed SMS delivery callback
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/Provider' }
+        - { $ref: '#/components/parameters/WebhookSignature' }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/SmsCallback' } } }
+      responses:
+        '200': { description: Delivery status accepted }
+        '401': { $ref: '#/components/responses/InvalidSignature' }
+        '404': { description: Provider message not found }
+  /api/v1/verifier/keys:
+    get:
+      tags: [Verification]
+      summary: Get public QR verification keys
+      responses: { '200': { description: Public key manifest } }
+  /api/v1/admin/certificates/{id}/revoke:
+    post:
+      tags: [Admin]
+      summary: Revoke a certificate and suspend its vehicle
+      parameters: [{ $ref: '#/components/parameters/CertificateId' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/RevocationRequest' } } }
+      responses:
+        '200': { description: Revoked certificate }
+        '404': { description: Certificate not found }
+  /api/v1/admin/reports/summary:
+    get:
+      tags: [Admin]
+      summary: Get scoped operational counts
+      parameters:
+        - { name: district_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Summary, content: { application/json: { schema: { $ref: '#/components/schemas/SummaryResponse' } } } }
+  /api/v1/public/verify/qr:
+    post:
+      tags: [Verification]
+      summary: Verify a signed QR token offline
+      security: []
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/QrVerifyRequest' } } }
+      responses: { '200': { description: Verification result } }
+  /api/v1/public/verify/{shortCode}:
+    get:
+      tags: [Verification]
+      summary: Verify a certificate short code online
+      security: []
+      parameters: [{ $ref: '#/components/parameters/ShortCode' }]
+      responses: { '200': { description: Certificate status }, '404': { description: Not found } }
+  /api/v1/public/certificates/{shortCode}.pdf:
+    get:
+      tags: [Verification]
+      summary: Download a printable certificate PDF
+      security: []
+      parameters: [{ $ref: '#/components/parameters/ShortCode' }]
+      responses:
+        '200': { description: PDF certificate, content: { application/pdf: { schema: { type: string, format: binary } } } }
+        '404': { description: Not found }
+        '409': { description: QR payload not ready }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    ChassisNumber: { name: chassis_number, in: query, required: true, schema: { type: string, minLength: 1 } }
+    IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 8, maxLength: 128 } }
+    Provider: { name: provider, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 32 } }
+    WebhookSignature: { name: x-erf-signature, in: header, required: true, schema: { type: string, description: HMAC-SHA256 hex digest } }
+    CertificateId: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    ShortCode: { name: shortCode, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 32 } }
+  responses:
+    Unauthorized: { description: Authentication required }
+    Forbidden: { description: Insufficient role or geographic scope }
+    ValidationError: { description: Invalid request }
+    InvalidSignature: { description: Invalid webhook signature }
+  schemas:
+    Uuid: { type: string, format: uuid }
+    DevTokenRequest: { type: object, required: [user_id, roles, district_ids, zone_ids], properties: { user_id: { $ref: '#/components/schemas/Uuid' }, roles: { type: array, items: { $ref: '#/components/schemas/Role' } }, district_ids: { type: array, items: { $ref: '#/components/schemas/Uuid' } }, zone_ids: { type: array, items: { $ref: '#/components/schemas/Uuid' } } } }
+    TokenResponse: { type: object, properties: { access_token: { type: string }, token_type: { type: string, example: Bearer } } }
+    Role: { type: string, enum: [inspector, hub_supervisor, district_administrator, central_administrator, finance_operator, traffic_police_verifier] }
+    UserProvisionRequest: { type: object, required: [external_subject, display_name, roles], properties: { external_subject: { type: string }, display_name: { type: string }, roles: { type: array, minItems: 1, items: { $ref: '#/components/schemas/Role' } }, scopes: { type: array, items: { $ref: '#/components/schemas/Scope' } } } }
+    Scope: { type: object, required: [district_id, zone_id], properties: { district_id: { $ref: '#/components/schemas/Uuid' }, zone_id: { $ref: '#/components/schemas/Uuid' } } }
+    UserProvisionResponse: { type: object, properties: { data: { type: object, properties: { user_id: { $ref: '#/components/schemas/Uuid' }, external_subject: { type: string }, roles: { type: array, items: { $ref: '#/components/schemas/Role' } }, scopes: { type: array, items: { $ref: '#/components/schemas/Scope' } } } } } }
+    RickshawRequest: { type: object, required: [chassis_number, owner_phone, district_id, zone_id], properties: { chassis_number: { type: string }, motor_number: { type: string }, owner_phone: { type: string }, district_id: { $ref: '#/components/schemas/Uuid' }, zone_id: { $ref: '#/components/schemas/Uuid' } } }
+    Rickshaw: { type: object, properties: { id: { $ref: '#/components/schemas/Uuid' }, chassis_number: { type: string }, motor_number: { type: string, nullable: true }, district_id: { $ref: '#/components/schemas/Uuid' }, zone_id: { $ref: '#/components/schemas/Uuid' }, status: { type: string } } }
+    RickshawLookupResponse: { type: object, properties: { data: { oneOf: [{ $ref: '#/components/schemas/Rickshaw' }, { type: 'null' }] } } }
+    RickshawCreatedResponse: { type: object, properties: { data: { type: object, properties: { id: { $ref: '#/components/schemas/Uuid' }, status: { type: string } } } } }
+    TemplateRequest: { type: object, required: [version, vehicle_type, schema_json, effective_from], properties: { version: { type: string }, vehicle_type: { type: string }, schema_json: { type: object, additionalProperties: true }, effective_from: { type: string, format: date-time }, effective_to: { type: string, format: date-time } } }
+    Template: { allOf: [{ $ref: '#/components/schemas/TemplateRequest' }, { type: object, properties: { id: { $ref: '#/components/schemas/Uuid' } } }] }
+    TemplateListResponse: { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Template' } } } }
+    TemplateCreatedResponse: { type: object, properties: { data: { type: object, properties: { id: { $ref: '#/components/schemas/Uuid' }, version: { type: string } } } } }
+    InspectionRequest: { type: object, required: [rickshaw_id, template_id, checklist_data, result], properties: { rickshaw_id: { $ref: '#/components/schemas/Uuid' }, template_id: { $ref: '#/components/schemas/Uuid' }, checklist_data: { type: object, additionalProperties: true }, result: { type: string, enum: [pass, fail] }, client_timestamp: { type: string, format: date-time } } }
+    InspectionResponse: { type: object, properties: { data: { type: object, properties: { inspection_id: { $ref: '#/components/schemas/Uuid' }, bill: { type: object, nullable: true, properties: { bill_code: { type: string }, expires_at: { type: string, format: date-time } } } } } } }
+    MfsCallback: { type: object, required: [event_id, bill_code, transaction_id, amount_paisa, status], properties: { event_id: { type: string }, bill_code: { type: string, pattern: '^\\d{6,8}$' }, transaction_id: { type: string }, amount_paisa: { type: integer, minimum: 1 }, status: { type: string, enum: [paid] } } }
+    SmsCallback: { type: object, required: [provider_message_id, status], properties: { provider_message_id: { type: string }, status: { type: string, enum: [delivered, failed] }, error: { type: string } } }
+    RevocationRequest: { type: object, required: [reason_code], properties: { reason_code: { type: string } } }
+    QrVerifyRequest: { type: object, required: [token], properties: { token: { type: string } } }
+    SummaryResponse: { type: object, properties: { data: { type: object, properties: { rickshaws: { type: integer }, inspections: { type: integer }, paid_bills: { type: integer }, active_certificates: { type: integer }, queued_notifications: { type: integer } } } } }

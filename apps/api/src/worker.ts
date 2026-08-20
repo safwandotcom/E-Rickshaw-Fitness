@@ -15,10 +15,20 @@ const channel = await connection.createChannel();
 await channel.assertExchange('erf.events', 'topic', { durable: true });
 
 async function publishOutbox(): Promise<void> {
-  const events = await db.query<{ id: string; type: string; aggregate_type: string; aggregate_id: string; payload: unknown }>('SELECT id, type, aggregate_type, aggregate_id, payload FROM outbox_events WHERE published_at IS NULL ORDER BY occurred_at LIMIT 100 FOR UPDATE SKIP LOCKED');
-  for (const event of events.rows) {
-    channel.publish('erf.events', event.type, Buffer.from(JSON.stringify(event)), { persistent: true, contentType: 'application/json', messageId: event.id });
-    await db.query('UPDATE outbox_events SET published_at = now(), attempts = attempts + 1 WHERE id = $1', [event.id]);
+  const events = await db.transaction(async (transaction) => {
+    const result = await transaction.query<{ id: string; type: string; aggregate_type: string; aggregate_id: string; payload: unknown }>("SELECT id, type, aggregate_type, aggregate_id, payload FROM outbox_events WHERE published_at IS NULL AND (claimed_at IS NULL OR claimed_at < now() - interval '5 minutes') ORDER BY occurred_at LIMIT 100 FOR UPDATE SKIP LOCKED");
+    if (!result.rows.length) return [];
+    await transaction.query('UPDATE outbox_events SET claimed_at = now(), attempts = attempts + 1 WHERE id = ANY($1::uuid[])', [result.rows.map((event) => event.id)]);
+    return result.rows;
+  });
+  for (const event of events) {
+    try {
+      channel.publish('erf.events', event.type, Buffer.from(JSON.stringify(event)), { persistent: true, contentType: 'application/json', messageId: event.id });
+      await db.query('UPDATE outbox_events SET published_at = now(), claimed_at = NULL WHERE id = $1', [event.id]);
+    } catch (error) {
+      await db.query('UPDATE outbox_events SET claimed_at = NULL WHERE id = $1', [event.id]);
+      throw error;
+    }
   }
 }
 
