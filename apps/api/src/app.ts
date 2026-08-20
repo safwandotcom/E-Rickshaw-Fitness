@@ -1,4 +1,5 @@
 import cors from '@fastify/cors';
+import helmet from '@fastify/helmet';
 import jwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -17,6 +18,7 @@ export async function buildApp(config: AppConfig, db: Database): Promise<Fastify
     origin: config.NODE_ENV === 'production' ? false : true,
     methods: ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE']
   });
+  await app.register(helmet, { contentSecurityPolicy: config.NODE_ENV === 'development' ? false : undefined });
   await app.register(jwt, { secret: config.AUTH_JWT_SECRET });
   await app.register(rateLimit, { max: 120, timeWindow: '1 minute' });
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (_request, body, done) => done(null, body));

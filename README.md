@@ -30,3 +30,7 @@ The MVP implementation now includes a TypeScript/Fastify API, React PWA, Postgre
 Run `npm.cmd run build` and `npm.cmd test` before committing changes.
 
 GitHub Actions validates lint, tests, builds, dependency advisories, and the API container on every push and pull request.
+
+## Staging handoff
+
+See [deployment readiness](docs/04-deployment-readiness.md) for the operator runbook. In brief: create `.env.staging` from the example using a secret manager, configure OIDC plus MFS/SMS callback contracts, start `docker-compose.staging.yml`, verify health endpoints, and run the full inspection-to-certificate test with duplicate webhook delivery. CI must pass before promotion; migrations run before API traffic and are tracked in `schema_migrations`.

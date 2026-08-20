@@ -36,3 +36,22 @@
 `npm.cmd run lint`, `npm.cmd run build`, and `npm.cmd test` all pass locally. The npm audit endpoint was unreachable from this environment; run a registry-connected dependency audit in CI before release.
 
 The restricted build environment used for this work does not permit binding a local API socket, so API runtime smoke testing must be run in a normal developer/CI environment. PostgreSQL, Redis, and RabbitMQ containers did start and report healthy status.
+
+## Staging runbook
+
+1. Create a staging secret-manager entry (or a protected `.env.staging` file) from `.env.staging.example`. Replace every `replace-*` value, including database/RabbitMQ credentials, JWT and encryption secrets, MFS/SMS webhook secrets, and the SMS token. Never commit this file.
+2. Configure OIDC before starting the API: set `OIDC_ENABLED=true`, the exact issuer URL, and audience. Register the staging callback/origins with the authority IdP, require MFA for privileged roles, then provision each operator by external subject through `POST /api/v1/admin/users` after the first central-admin login. Unprovisioned subjects are denied.
+3. Configure provider callbacks over HTTPS. Route the MFS callback to the API callback endpoint documented in `docs/openapi.yaml`; validate the provider's HMAC/mTLS/IP allowlist contract and send the raw signed body unchanged. Route SMS delivery callbacks to the SMS callback endpoint with its HMAC signature. Test duplicate event delivery and rejected signatures before enabling production credentials.
+4. Start staging with migrations run before the API:
+
+   ```powershell
+   docker compose --env-file .env.staging -f docker-compose.staging.yml up -d --build
+   docker compose --env-file .env.staging -f docker-compose.staging.yml ps
+   ```
+
+   The container executes `node apps/api/dist/migrate.js`; migrations are applied in lexicographic order and recorded in `schema_migrations`. For an existing database, run `npm.cmd --workspace @erf/api run db:migrate` from the repository root instead of replaying init scripts. Do not load `0002_development_seed.sql` in staging or production.
+5. Verify `/health/live` and `/health/ready`, then run the end-to-end test: provisioned OIDC login → inspection with an idempotency key → bill/SMS queue → signed sandbox MFS callback → certificate/PDF/QR verification → SMS delivery callback. Confirm a repeated callback does not create a second payment or certificate.
+
+## CI and release gate
+
+Every push to `main` and every pull request must pass `.github/workflows/ci.yml`: `npm ci`, lint, tests, production builds, high-severity dependency audit, and the API container build. A staging promotion must use the exact image and commit validated by CI, apply migrations before traffic, and retain the CI logs and migration output with the release record.
