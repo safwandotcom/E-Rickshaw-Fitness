@@ -120,6 +120,24 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
     return { data: item };
   });
 
+  app.get('/api/v1/admin/reports/summary', async (request, reply) => {
+    const principal = await principalFor(request, config, oidc, db);
+    requireRole(principal, ['hub_supervisor', 'district_administrator', 'central_administrator', 'finance_operator']);
+    const query = request.query as { district_id?: string };
+    const districtId = query.district_id ? z.string().uuid().parse(query.district_id) : null;
+    if (districtId && !principal.roles.includes('central_administrator') && !principal.scope.districtIds.includes(districtId)) return reply.code(403).send({ error: { code: 'OUT_OF_SCOPE', message: 'The selected district is outside your assignment.', request_id: request.id } });
+    const args = districtId ? [districtId] : [];
+    const filter = districtId ? ' WHERE district_id = $1' : '';
+    const result = await db.query<{ rickshaws: string; inspections: string; paid_bills: string; active_certificates: string; queued_notifications: string }>(`SELECT
+      (SELECT count(*) FROM rickshaws${filter}) AS rickshaws,
+      (SELECT count(*) FROM inspections i JOIN rickshaws r ON r.id = i.rickshaw_id${districtId ? ' WHERE r.district_id = $1' : ''}) AS inspections,
+      (SELECT count(*) FROM bills b JOIN rickshaws r ON r.id = b.rickshaw_id${districtId ? ' WHERE r.district_id = $1 AND' : ' WHERE'} b.status = 'paid') AS paid_bills,
+      (SELECT count(*) FROM certificates c JOIN rickshaws r ON r.id = c.rickshaw_id${districtId ? ' WHERE r.district_id = $1 AND' : ' WHERE'} c.status = 'active') AS active_certificates,
+      (SELECT count(*) FROM notification_jobs WHERE status IN ('queued', 'sending')) AS queued_notifications`, args);
+    const row = result.rows[0];
+    return { data: Object.fromEntries(Object.entries(row).map(([key, value]) => [key, Number(value)])) };
+  });
+
   app.post('/api/v1/rickshaws', async (request, reply) => {
     const principal = await principalFor(request, config, oidc, db);
     requireRole(principal, ['inspector', 'hub_supervisor', 'district_administrator', 'central_administrator']);
