@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-21T00:00:00Z",
+  "title": "Design System: E-Rickshaw Fitness",
+  "extensions": {
+    "colorMeta": {
+      "primary": { "role": "primary", "displayName": "Bangladesh Green", "canonical": "#006a4e", "tonalRamp": ["#001f16", "#00402f", "#005a3d", "#006a4e", "#16805f", "#4da184", "#a8d4c2", "#e3f2e9"] },
+      "primary-deep": { "role": "primary", "displayName": "Bangladesh Green, Deep", "canonical": "#00402f", "tonalRamp": [] },
+      "primary-tint": { "role": "primary", "displayName": "Bangladesh Green, Tint", "canonical": "#e3f2e9", "tonalRamp": [] },
+      "neutral-ink": { "role": "neutral", "displayName": "Ink", "canonical": "#16261e", "tonalRamp": ["#0a120d", "#16261e", "#2a3a32", "#4f6058", "#8ba397", "#c3d3ca", "#e3ece7", "#f5f8f6"] },
+      "neutral-bg": { "role": "neutral", "displayName": "Page", "canonical": "#f5f8f6", "tonalRamp": [] },
+      "neutral-surface": { "role": "neutral", "displayName": "Surface", "canonical": "#ffffff", "tonalRamp": [] },
+      "neutral-border": { "role": "neutral", "displayName": "Border", "canonical": "#8ba397", "tonalRamp": [] },
+      "neutral-muted": { "role": "neutral", "displayName": "Muted", "canonical": "#4f6058", "tonalRamp": [] },
+      "neutral-divider": { "role": "neutral", "displayName": "Divider", "canonical": "#e3ece7", "tonalRamp": [] },
+      "warning-ink": { "role": "warning", "displayName": "Warning Ink", "canonical": "#7a4a00", "tonalRamp": ["#2e1c00", "#4d2f00", "#663e00", "#7a4a00", "#a3671a", "#c98f4a", "#e8c48f", "#fbf1de"] },
+      "warning-tint": { "role": "warning", "displayName": "Warning Tint", "canonical": "#fbf1de", "tonalRamp": [] },
+      "danger-ink": { "role": "danger", "displayName": "Danger Ink", "canonical": "#9c2b22", "tonalRamp": ["#3d0f0a", "#641a14", "#7f221b", "#9c2b22", "#c05147", "#d98e85", "#f0c3bd", "#fbeae8"] },
+      "danger-tint": { "role": "danger", "displayName": "Danger Tint", "canonical": "#fbeae8", "tonalRamp": [] }
+    },
+    "typographyMeta": {
+      "headline": { "displayName": "Headline", "purpose": "App title only, one per screen." },
+      "title": { "displayName": "Title", "purpose": "Section headings (h2/h3)." },
+      "body": { "displayName": "Body", "purpose": "Form labels, running text, table cells." },
+      "label": { "displayName": "Label", "purpose": "Field captions, status badges, table headers. Sentence case, never uppercase-tracked." }
+    },
+    "shadows": [
+      { "name": "resting-panel", "value": "0 1px 4px rgba(0, 26, 11, 0.12)", "purpose": "The only shadow in the system. Applied once to lift a panel off the page background; never escalates on hover." }
+    ],
+    "motion": [
+      { "name": "ease-standard", "value": "cubic-bezier(0.4, 0, 0.2, 1)", "purpose": "Default easing for color/border state transitions (button hover, focus ring)." }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "480px" },
+      { "name": "md", "value": "720px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "One primary action per view/form — Submit inspection, Sign in, Renew certificate.",
+      "html": "<button class=\"ds-btn-primary\">Submit inspection</button>",
+      "css": ".ds-btn-primary { background: #006a4e; color: #ffffff; padding: 0.6rem 1rem; border-radius: 0.3rem; border: 0; font-weight: 600; cursor: pointer; transition: background 0.2s cubic-bezier(0.4,0,0.2,1); } .ds-btn-primary:hover { background: #00402f; } .ds-btn-primary:focus-visible { outline: 3px solid #0a7cff; outline-offset: 2px; } .ds-btn-primary:disabled { opacity: 0.65; cursor: wait; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Non-destructive secondary actions — Sync saved inspections, Refresh summary, Search vehicle.",
+      "html": "<button class=\"ds-btn-secondary\">Search vehicle</button>",
+      "css": ".ds-btn-secondary { background: #ffffff; color: #006a4e; padding: 0.6rem 1rem; border-radius: 0.3rem; border: 1px solid #006a4e; font-weight: 600; cursor: pointer; transition: background 0.2s cubic-bezier(0.4,0,0.2,1); } .ds-btn-secondary:hover { background: #e3f2e9; } .ds-btn-secondary:focus-visible { outline: 3px solid #0a7cff; outline-offset: 2px; }"
+    },
+    {
+      "name": "Danger Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "Session-ending or reversing actions — Sign out, Stop camera. New: today these look identical to primary actions.",
+      "html": "<button class=\"ds-btn-danger\">Sign out</button>",
+      "css": ".ds-btn-danger { background: #ffffff; color: #9c2b22; padding: 0.6rem 1rem; border-radius: 0.3rem; border: 1px solid #9c2b22; font-weight: 600; cursor: pointer; transition: background 0.2s cubic-bezier(0.4,0,0.2,1); } .ds-btn-danger:hover { background: #fbeae8; } .ds-btn-danger:focus-visible { outline: 3px solid #0a7cff; outline-offset: 2px; }"
+    },
+    {
+      "name": "Status Badge — Active",
+      "kind": "chip",
+      "refersTo": "status-badge-active",
+      "description": "Certificate/bill/inspection state: active, valid, paid, certified.",
+      "html": "<span class=\"ds-badge ds-badge-active\">Active</span>",
+      "css": ".ds-badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 0.3rem; font-size: 0.875rem; font-weight: 600; line-height: 1.4; } .ds-badge-active { background: #e3f2e9; color: #00402f; }"
+    },
+    {
+      "name": "Status Badge — Warning",
+      "kind": "chip",
+      "refersTo": "status-badge-warning",
+      "description": "Certificate/bill/inspection state: pending, unpaid, awaiting sync.",
+      "html": "<span class=\"ds-badge ds-badge-warning\">Pending</span>",
+      "css": ".ds-badge-warning { background: #fbf1de; color: #7a4a00; }"
+    },
+    {
+      "name": "Status Badge — Danger",
+      "kind": "chip",
+      "refersTo": "status-badge-danger",
+      "description": "Certificate/bill/inspection state: failed, revoked, expired, invalid signature.",
+      "html": "<span class=\"ds-badge ds-badge-danger\">Revoked</span>",
+      "css": ".ds-badge-danger { background: #fbeae8; color: #9c2b22; }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input-text",
+      "description": "Standard field style, used for every text/UUID/number input in the app.",
+      "html": "<label class=\"ds-field\">Chassis number<input class=\"ds-input\" type=\"text\" placeholder=\"e.g. ER-8821\" /></label>",
+      "css": ".ds-field { display: grid; gap: 0.25rem; font-size: 1rem; font-weight: 600; color: #16261e; } .ds-input { font: inherit; padding: 0.55rem; border-radius: 0.3rem; border: 1px solid #8ba397; } .ds-input:focus-visible { outline: 3px solid #0a7cff; outline-offset: 2px; } .ds-input.ds-input-error { border-color: #9c2b22; }"
+    },
+    {
+      "name": "Nav Tab",
+      "kind": "nav",
+      "refersTo": "nav-tab",
+      "description": "Top-level section switcher (Inspection / Verify QR / Admin). Active tab uses deep green + inset ring, matches existing aria-current implementation.",
+      "html": "<nav class=\"ds-nav\"><button class=\"ds-nav-tab\" aria-current=\"page\">Inspection</button><button class=\"ds-nav-tab\">Verify QR</button></nav>",
+      "css": ".ds-nav { display: flex; gap: 0.5rem; } .ds-nav-tab { background: #006a4e; color: #ffffff; padding: 0.55rem 1rem; border-radius: 0.3rem; border: 0; font-weight: 600; cursor: pointer; } .ds-nav-tab[aria-current=\"page\"] { background: #00402f; box-shadow: inset 0 0 0 2px #ffffff; } .ds-nav-tab:focus-visible { outline: 3px solid #0a7cff; outline-offset: 2px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Certificate Office",
+    "overview": "The interface should feel like a well-run government service counter, not a startup dashboard: procedural, plainly labelled, unmistakably legitimate. A form here reads as a step toward an official outcome — a stamped certificate, a recorded inspection, a confirmed payment — not as content to browse. Bangladesh flag green (#006a4e) is the single institutional marker; it appears with intent (headers, primary actions, active/valid state) and nowhere else, so its authority doesn't dilute. This system explicitly rejects the consumer-SaaS vocabulary: no gradient heroes, no glassmorphism, no card-hover lift theatrics, no marketing empty-state illustrations, no playful micro-copy. Status must be legible at a glance and in bright field sunlight — a misread valid vs revoked here is a real-world compliance outcome, not a UX inconvenience, so color-coded status badges carry real semantic weight rather than decoration. Typography is entirely platform-native, deliberately, not by default: this is an offline-first field tool used in Bangla and English, and a webfont dependency risks failing to load exactly when the tool is needed most.",
+    "keyCharacteristics": [
+      "One institutional accent (flag green), used sparingly and consistently",
+      "Flat, quiet elevation — no card-lift hover effects, no shadow theatrics",
+      "Color-coded status badges carry real meaning: green = valid/active, amber = pending, red = failed/revoked/expired",
+      "Platform-native typography for guaranteed Bangla+Latin rendering offline",
+      "Generous touch targets and high contrast for outdoor, one-handed, field use"
+    ],
+    "rules": [
+      { "name": "The One Marker Rule", "body": "Flag green is the only branding color in the system. It never appears as decoration — only as an active/primary/valid signal. If a second saturated color is needed, it must carry a distinct status meaning (warning or danger), never a second brand role.", "section": "colors" },
+      { "name": "The Native Script Rule", "body": "No @font-face, no Google Fonts, no CDN font dependency. The stack must render correctly with zero network access, in both scripts, using whatever the OS ships.", "section": "typography" },
+      { "name": "The Flat Ledger Rule", "body": "No shadow increases on hover or focus. A panel's elevation is constant; interactive state is communicated by color and outline, never by simulated lift.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do keep flag green (#006a4e) as the only branding color; every other saturated color must carry a status meaning (warning/danger).",
+      "Do use the status badge component for every valid/pending/revoked/expired/failed state instead of plain colored text.",
+      "Do keep typography on the platform-native stack — no web fonts, ever, in this project.",
+      "Do give destructive/session-ending actions (sign out, stop camera, revoke, void) a visually distinct treatment from primary actions.",
+      "Do keep elevation flat and constant; the single resting-panel shadow is the whole vocabulary.",
+      "Do use sentence case for labels and headings — never uppercase-tracked eyebrow text."
+    ],
+    "donts": [
+      "Don't add a gradient hero, marketing illustration, or empty-state graphic anywhere in this product.",
+      "Don't use glassmorphism, backdrop blur, or translucent panels — this is a plain, opaque, official interface.",
+      "Don't add hover-lift/scale transforms to cards or buttons; elevation and scale are constant.",
+      "Don't introduce a second brand accent color alongside flag green — additional saturated color must map to warning or danger, not decoration.",
+      "Don't load a custom webfont or Google Fonts stylesheet; it breaks the offline guarantee this tool depends on.",
+      "Don't use border-left/border-right colored stripes as a callout pattern (the current .notice class does this — replace per the audit)."
+    ]
+  }
+}

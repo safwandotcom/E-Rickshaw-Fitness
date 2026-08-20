@@ -80,8 +80,8 @@ export function QrCameraScanner({ onDecode }: QrCameraScannerProps) {
       <video ref={videoRef} muted playsInline className="qr-scanner-video" hidden={!scanning} />
       <canvas ref={canvasRef} hidden />
       {scanning
-        ? <button type="button" onClick={stop}>Stop camera</button>
-        : <button type="button" onClick={() => void start()}>Scan with camera</button>}
+        ? <button type="button" className="button-secondary" onClick={stop}>Stop camera</button>
+        : <button type="button" className="button-secondary" onClick={() => void start()}>Scan with camera</button>}
       {error ? <p className="result invalid">{error}</p> : null}
     </div>
   );
