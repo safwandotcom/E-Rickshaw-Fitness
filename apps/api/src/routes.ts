@@ -2,7 +2,7 @@ import { createHash, createHmac, randomInt, timingSafeEqual } from 'node:crypto'
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { AppConfig } from './config.js';
-import { Database } from './db.js';
+import { Database, type Queryable } from './db.js';
 import { DevelopmentQrSigner, FieldCipher } from './lib/crypto.js';
 import { AuthorizationError, type Principal, type Role, requireRole, requireZoneAccess } from './lib/authorization.js';
 import { OidcVerifier } from './lib/oidc.js';
@@ -36,7 +36,7 @@ const callbackInput = z.object({
   amount_paisa: z.number().int().positive(),
   status: z.enum(['paid', 'failed', 'reversed'])
 });
-const revocationInput = z.object({ reason_code: z.string().trim().min(2).max(64) });
+const reasonInput = z.object({ reason_code: z.string().trim().min(2).max(64) });
 const userProvisionInput = z.object({
   external_subject: z.string().trim().min(2).max(256),
   display_name: z.string().trim().min(2).max(160),
@@ -86,6 +86,24 @@ async function principalFor(request: FastifyRequest, config: AppConfig, oidc: Oi
 
 function billCode(): string {
   return String(randomInt(10000000, 100000000));
+}
+
+/** Issues a new active certificate + signed QR for a rickshaw, used both by
+ * the payment webhook (first issuance) and certificate renewal (reissuance
+ * ahead of expiry). Does not touch any prior certificate for the rickshaw —
+ * callers are responsible for superseding/revoking it if applicable. */
+async function issueCertificate(transaction: Queryable, signer: DevelopmentQrSigner, keyId: string, rickshawId: string, chassisNumber: string, zoneCode: string): Promise<{ id: string; shortCode: string; expiresAt: Date }> {
+  const certificateNumber = `ERF-${new Date().getUTCFullYear()}-${randomInt(10000000, 99999999)}`;
+  const qrHash = createHash('sha256').update(certificateNumber).digest();
+  const certificate = await transaction.query<{ id: string; short_code: string; expires_at: Date }>(
+    "INSERT INTO certificates (certificate_number, rickshaw_id, qr_hash, key_id, short_code, issued_at, expires_at, status) VALUES ($1, $2, $3, $4, $5, now(), now() + interval '1 year', 'active') RETURNING id, short_code, expires_at",
+    [certificateNumber, rickshawId, qrHash, keyId, randomInt(100000, 999999).toString()]
+  );
+  const row = certificate.rows[0];
+  const qr = signer.issue({ cid: certificateNumber, ch: chassisNumber.slice(-4), zone: zoneCode, iat: Math.floor(Date.now() / 1000), exp: Math.floor(row.expires_at.getTime() / 1000) });
+  await transaction.query('UPDATE certificates SET qr_payload = $1 WHERE id = $2', [qr, row.id]);
+  await transaction.query("INSERT INTO outbox_events (type, aggregate_type, aggregate_id, payload) VALUES ('certificate.issued', 'certificate', $1, $2)", [row.id, { short_code: row.short_code, qr }]);
+  return { id: row.id, shortCode: row.short_code, expiresAt: row.expires_at };
 }
 
 export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Database, signer: DevelopmentQrSigner): void {
@@ -241,6 +259,35 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
     return reply.code(201).send(response);
   });
 
+  app.post('/api/v1/inspections/:id/void', async (request, reply) => {
+    const principal = await principalFor(request, config, oidc, db);
+    requireRole(principal, ['hub_supervisor', 'district_administrator', 'central_administrator']);
+    const inspectionId = z.string().uuid().parse((request.params as { id: string }).id);
+    const input = reasonInput.parse(parseJson(request));
+    const outcome = await db.transaction(async (transaction) => {
+      const inspection = await transaction.query<{ status: string; rickshaw_id: string; district_id: string; zone_id: string }>(
+        'SELECT i.status, i.rickshaw_id, r.district_id, r.zone_id FROM inspections i JOIN rickshaws r ON r.id = i.rickshaw_id WHERE i.id = $1 FOR UPDATE', [inspectionId]
+      );
+      const row = inspection.rows[0];
+      if (!row) return 'not_found' as const;
+      requireZoneAccess(principal, row.district_id, row.zone_id);
+      if (row.status === 'voided') return 'already_voided' as const;
+      if (row.status !== 'passed' && row.status !== 'failed') return 'invalid_state' as const;
+      await transaction.query("UPDATE inspections SET status = 'voided', void_reason = $2, voided_at = now(), voided_by = $3, updated_at = now() WHERE id = $1", [inspectionId, input.reason_code, principal.userId]);
+      // Only an unpaid bill and a rickshaw not yet certified off this
+      // inspection are safe to unwind automatically; a paid bill or issued
+      // certificate needs the explicit reversal/revocation workflow instead.
+      await transaction.query("UPDATE bills SET status = 'expired' WHERE inspection_id = $1 AND status = 'unpaid'", [inspectionId]);
+      await transaction.query("UPDATE rickshaws SET status = 'pending', updated_at = now() WHERE id = $1 AND status = 'pre_approved'", [row.rickshaw_id]);
+      return 'voided' as const;
+    });
+    if (outcome === 'not_found') return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Inspection not found.', request_id: request.id } });
+    if (outcome === 'invalid_state') return reply.code(409).send({ error: { code: 'INVALID_STATE', message: 'Only a passed or failed inspection can be voided.', request_id: request.id } });
+    if (outcome === 'already_voided') return { data: { voided: true, duplicate: true } };
+    await audit(db, principal.userId, 'inspection.voided', 'inspection', inspectionId, request);
+    return { data: { voided: true } };
+  });
+
   app.post('/api/v1/webhooks/mfs/:provider', async (request, reply) => {
     const raw = typeof request.body === 'string' ? request.body : '';
     const supplied = request.headers['x-erf-signature'];
@@ -261,14 +308,9 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
         await transaction.query("INSERT INTO payments (bill_id, provider, provider_transaction_id, callback_event_id, amount_paisa, status, paid_at) VALUES ($1, $2, $3, $4, $5, 'paid', now())", [row.id, provider, input.transaction_id, input.event_id, input.amount_paisa]);
         await transaction.query("UPDATE bills SET status = 'paid' WHERE id = $1", [row.id]);
         await transaction.query("UPDATE rickshaws SET status = 'certified', updated_at = now() WHERE id = $1", [row.rickshaw_id]);
-        const certificateNumber = `ERF-${new Date().getUTCFullYear()}-${randomInt(10000000, 99999999)}`;
-        const qrHash = createHash('sha256').update(certificateNumber).digest();
-        const certificate = await transaction.query<{ id: string; short_code: string; expires_at: Date }>("INSERT INTO certificates (certificate_number, rickshaw_id, qr_hash, key_id, short_code, issued_at, expires_at, status) VALUES ($1, $2, $3, $4, $5, now(), now() + interval '1 year', 'active') RETURNING id, short_code, expires_at", [certificateNumber, row.rickshaw_id, qrHash, config.QR_SIGNING_KEY_ID, randomInt(100000, 999999).toString()]);
-        const qr = signer.issue({ cid: certificateNumber, ch: vehicle.rows[0].chassis_number.slice(-4), zone: vehicle.rows[0].zone_code, iat: Math.floor(Date.now() / 1000), exp: Math.floor(certificate.rows[0].expires_at.getTime() / 1000) });
-        await transaction.query('UPDATE certificates SET qr_payload = $1 WHERE id = $2', [qr, certificate.rows[0].id]);
-        await transaction.query("INSERT INTO outbox_events (type, aggregate_type, aggregate_id, payload) VALUES ('certificate.issued', 'certificate', $1, $2)", [certificate.rows[0].id, { short_code: certificate.rows[0].short_code, qr }]);
-        await transaction.query("INSERT INTO notification_jobs (type, recipient_encrypted, payload) VALUES ('certificate_issued', $1, $2)", [vehicle.rows[0].owner_phone_encrypted, { certificate_short_code: certificate.rows[0].short_code }]);
-        return { duplicate: false as const, shortCode: certificate.rows[0].short_code };
+        const certificate = await issueCertificate(transaction, signer, config.QR_SIGNING_KEY_ID, row.rickshaw_id, vehicle.rows[0].chassis_number, vehicle.rows[0].zone_code);
+        await transaction.query("INSERT INTO notification_jobs (type, recipient_encrypted, payload) VALUES ('certificate_issued', $1, $2)", [vehicle.rows[0].owner_phone_encrypted, { certificate_short_code: certificate.shortCode }]);
+        return { duplicate: false as const, shortCode: certificate.shortCode };
       });
       if (outcome.duplicate) return { data: { accepted: true, duplicate: true } };
       if ('invalid' in outcome && outcome.invalid) return reply.code(409).send({ error: { code: 'PAYMENT_NOT_ACCEPTED', message: 'The payment could not be matched to an unpaid bill.', request_id: request.id } });
@@ -336,7 +378,7 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
     const principal = await principalFor(request, config, oidc, db);
     requireRole(principal, ['district_administrator', 'central_administrator']);
     const certificateId = z.string().uuid().parse((request.params as { id: string }).id);
-    const input = revocationInput.parse(parseJson(request));
+    const input = reasonInput.parse(parseJson(request));
     const outcome = await db.transaction(async (transaction) => {
       const certificate = await transaction.query<{ rickshaw_id: string; district_id: string; zone_id: string; status: string }>('SELECT c.rickshaw_id, r.district_id, r.zone_id, c.status FROM certificates c JOIN rickshaws r ON r.id = c.rickshaw_id WHERE c.id = $1 FOR UPDATE', [certificateId]);
       const row = certificate.rows[0];
@@ -352,6 +394,35 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
     if (outcome === 'already_revoked') return { data: { revoked: true, duplicate: true } };
     await audit(db, principal.userId, 'certificate.revoked', 'certificate', certificateId, request);
     return { data: { revoked: true } };
+  });
+
+  app.post('/api/v1/admin/certificates/:id/renew', async (request, reply) => {
+    const principal = await principalFor(request, config, oidc, db);
+    requireRole(principal, ['district_administrator', 'central_administrator']);
+    const certificateId = z.string().uuid().parse((request.params as { id: string }).id);
+    const outcome = await db.transaction(async (transaction) => {
+      const certificate = await transaction.query<{ status: string; rickshaw_id: string; district_id: string; zone_id: string; chassis_number: string; zone_code: string; owner_phone_encrypted: Buffer; superseded_by_certificate_id: string | null }>(
+        `SELECT c.status, c.rickshaw_id, r.district_id, r.zone_id, r.chassis_number, z.code AS zone_code, r.owner_phone_encrypted, c.superseded_by_certificate_id
+         FROM certificates c JOIN rickshaws r ON r.id = c.rickshaw_id JOIN zones z ON z.id = r.zone_id WHERE c.id = $1 FOR UPDATE`, [certificateId]
+      );
+      const row = certificate.rows[0];
+      if (!row) return { outcome: 'not_found' as const };
+      requireZoneAccess(principal, row.district_id, row.zone_id);
+      if (row.status === 'superseded' && row.superseded_by_certificate_id) {
+        const existing = await transaction.query<{ short_code: string }>('SELECT short_code FROM certificates WHERE id = $1', [row.superseded_by_certificate_id]);
+        return { outcome: 'duplicate' as const, shortCode: existing.rows[0]?.short_code ?? null };
+      }
+      if (row.status !== 'active') return { outcome: 'invalid_state' as const };
+      const issued = await issueCertificate(transaction, signer, config.QR_SIGNING_KEY_ID, row.rickshaw_id, row.chassis_number, row.zone_code);
+      await transaction.query('UPDATE certificates SET status = $1, superseded_by_certificate_id = $2 WHERE id = $3', ['superseded', issued.id, certificateId]);
+      await transaction.query("INSERT INTO notification_jobs (type, recipient_encrypted, payload) VALUES ('certificate_issued', $1, $2)", [row.owner_phone_encrypted, { certificate_short_code: issued.shortCode }]);
+      return { outcome: 'renewed' as const, shortCode: issued.shortCode };
+    });
+    if (outcome.outcome === 'not_found') return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Certificate not found.', request_id: request.id } });
+    if (outcome.outcome === 'invalid_state') return reply.code(409).send({ error: { code: 'INVALID_STATE', message: 'Only an active certificate can be renewed.', request_id: request.id } });
+    if (outcome.outcome === 'duplicate') return { data: { renewed: true, duplicate: true, certificate_short_code: outcome.shortCode } };
+    await audit(db, principal.userId, 'certificate.renewed', 'certificate', certificateId, request);
+    return { data: { renewed: true, certificate_short_code: outcome.shortCode } };
   });
 
   app.post('/api/v1/public/verify/qr', async (request, reply) => {
