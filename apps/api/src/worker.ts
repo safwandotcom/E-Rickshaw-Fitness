@@ -16,7 +16,7 @@ await channel.assertExchange('erf.events', 'topic', { durable: true });
 
 async function publishOutbox(): Promise<void> {
   const events = await db.transaction(async (transaction) => {
-    const result = await transaction.query<{ id: string; type: string; aggregate_type: string; aggregate_id: string; payload: unknown }>("SELECT id, type, aggregate_type, aggregate_id, payload FROM outbox_events WHERE published_at IS NULL AND (claimed_at IS NULL OR claimed_at < now() - interval '5 minutes') ORDER BY occurred_at LIMIT 100 FOR UPDATE SKIP LOCKED");
+    const result = await transaction.query<{ id: string; type: string; aggregate_type: string; aggregate_id: string; payload: unknown; occurred_at: Date }>("SELECT id, type, aggregate_type, aggregate_id, payload, occurred_at FROM outbox_events WHERE published_at IS NULL AND (claimed_at IS NULL OR claimed_at < now() - interval '5 minutes') ORDER BY occurred_at LIMIT 100 FOR UPDATE SKIP LOCKED");
     if (!result.rows.length) return [];
     await transaction.query('UPDATE outbox_events SET claimed_at = now(), attempts = attempts + 1 WHERE id = ANY($1::uuid[])', [result.rows.map((event) => event.id)]);
     return result.rows;
@@ -56,17 +56,35 @@ async function dispatchNotificationJob(): Promise<void> {
   }
 }
 
-await channel.assertQueue('erf.notifications', { durable: true, deadLetterExchange: 'erf.dlx' });
-await channel.bindQueue('erf.notifications', 'erf.events', 'payment.instructions.requested');
-await channel.bindQueue('erf.notifications', 'erf.events', 'certificate.issued');
-channel.consume('erf.notifications', async (message) => {
+// Actual SMS delivery is driven by dispatchNotificationJob() polling
+// notification_jobs directly (it needs the decrypted recipient, which is
+// deliberately never put on the broker). This consumer instead gives every
+// domain event published to the outbox exchange a durable, replayable
+// record for support and audit — independent of whichever bounded contexts
+// react to it, and unaffected by notification_jobs being pruned or retried.
+interface DomainEventMessage {
+  id: string;
+  type: string;
+  aggregate_type: string;
+  aggregate_id: string;
+  payload: unknown;
+  occurred_at: string;
+}
+
+await channel.assertExchange('erf.dlx', 'fanout', { durable: true });
+await channel.assertQueue('erf.domain-events', { durable: true, deadLetterExchange: 'erf.dlx' });
+await channel.bindQueue('erf.domain-events', 'erf.events', '#');
+channel.consume('erf.domain-events', async (message) => {
   if (!message) return;
   try {
-    // Replace with approved Telco SMS adapter. The worker deliberately stores no phone number in broker payloads.
-    console.info('notification event accepted', message.fields.routingKey, message.properties.messageId);
+    const event = JSON.parse(message.content.toString('utf8')) as DomainEventMessage;
+    await db.query(
+      'INSERT INTO domain_events (message_id, type, aggregate_type, aggregate_id, payload, occurred_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (message_id) DO NOTHING',
+      [event.id, event.type, event.aggregate_type, event.aggregate_id, event.payload, event.occurred_at]
+    );
     channel.ack(message);
   } catch (error) {
-    console.error('notification event failed', error);
+    console.error('domain event recording failed', error);
     channel.nack(message, false, false);
   }
 });

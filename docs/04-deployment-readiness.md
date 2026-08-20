@@ -2,14 +2,16 @@
 
 ## Implemented MVP capabilities
 
-- React PWA with inspector submission form, IndexedDB offline outbox, background service-worker shell cache, and offline Ed25519 QR signature verification.
-- Fastify API with JWT validation, RBAC/geographic authorization primitives, API rate limits, request IDs, health endpoints, validation, and structured error responses.
-- PostgreSQL schema for users/roles/scopes, vehicles, inspections, billing, payments, certificates, outbox events, and audit events.
-- Passing-inspection to payment-bill transition; HMAC-verified MFS callback to idempotent payment/certificate transition.
+- React PWA with a template-driven inspection checklist (fields render from the active `inspection_templates.schema_json`, required reason on a failed check), IndexedDB offline outbox, background service-worker shell cache, and offline Ed25519 QR signature verification.
+- Real OIDC Authorization Code + PKCE sign-in in the PWA (`VITE_OIDC_*`), falling back to the manual development bearer-token field when unconfigured. The API's OIDC verifier checks only the token signature/issuer/audience/subject — roles and geographic scope always come from local provisioning, never from token claims.
+- Fastify API with JWT/OIDC validation, RBAC/geographic authorization primitives, API rate limits, request IDs, health endpoints, validation, and structured error responses.
+- PostgreSQL schema for users/roles/scopes, vehicles, inspections, billing, payments, certificates, outbox events, domain events, and audit events.
+- Passing-inspection to payment-bill transition; HMAC-verified MFS callback (`paid`/`failed`/`reversed`) to idempotent payment/certificate transition. A `reversed` callback revokes any certificate already issued off that payment. A finance/central-admin `GET /api/v1/admin/reconciliation` endpoint and matching PWA panel list failed/reversed payments and other exceptions.
 - Backend idempotency-key reservations and replayed-response handling for offline inspection synchronization.
 - Ed25519 signed QR token issuance, public-key manifest, online public certificate lookup, and offline signature validation.
-- Privileged certificate revocation with geographic authorization, audit trail, and automatic bill/certificate expiry sweeps.
-- RabbitMQ outbox publisher and notification-consumer foundation, plus local PostgreSQL/Redis/RabbitMQ compose environment.
+- Privileged certificate revocation and renewal (supersession) with geographic authorization, audit trail, and automatic bill/certificate expiry sweeps.
+- Inspection void/correction workflow (`POST /api/v1/inspections/:id/void`) for hub supervisors and above, with a required reason and automatic unwind of an unpaid bill/pre-approved rickshaw status.
+- RabbitMQ outbox publisher and a durable domain-event consumer that persists every published event to an append-only `domain_events` table for support/replay, independent of the `notification_jobs` polling worker that actually sends SMS. Plus a local PostgreSQL/Redis/RabbitMQ compose environment.
 
 ## Required before a production rollout
 
