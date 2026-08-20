@@ -6,7 +6,7 @@ import './styles.css';
 
 const API = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
 
-type View = 'inspection' | 'verification';
+type View = 'inspection' | 'verification' | 'admin';
 type KeyRecord = { key_id: string; public_key_pem: string };
 
 function App() {
@@ -48,9 +48,14 @@ function App() {
     const result = await verifyOffline(certificate, keys[0]?.public_key_pem ?? '');
     setVerification(result.valid ? `Offline signature valid. ${navigator.onLine ? 'Use online lookup for revocation status.' : 'Live revocation status unavailable.'}` : `Not valid: ${result.reason ?? 'unknown reason'}`);
   }
+  async function provisionUser(form: HTMLFormElement) {
+    const values = Object.fromEntries(new FormData(form));
+    const response = await fetch(`${API}/api/v1/admin/users`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...auth }, body: JSON.stringify({ external_subject: values.external_subject, display_name: values.display_name, roles: [values.role], scopes: values.district_id && values.zone_id ? [{ district_id: values.district_id, zone_id: values.zone_id }] : [] }) });
+    setMessage(response.ok ? 'User provisioned successfully.' : `Provisioning failed: ${await response.text()}`);
+  }
   return <main>
     <header><h1>E-Rickshaw Fitness</h1><p>Inspector & roadside verification PWA</p></header>
-    <nav><button onClick={() => setView('inspection')}>Inspection</button><button onClick={() => setView('verification')}>Verify QR</button></nav>
+    <nav><button onClick={() => setView('inspection')}>Inspection</button><button onClick={() => setView('verification')}>Verify QR</button><button onClick={() => setView('admin')}>Admin</button></nav>
     <section className="notice">{message} Offline queue: {pending}</section>
     <label>Access token (development only)<input value={token} onChange={(event) => setToken(event.target.value)} placeholder="Bearer token" /></label>
     {view === 'inspection' ? <section><h2>Submit fitness inspection</h2><form onSubmit={(event) => { event.preventDefault(); void submitInspection(event.currentTarget); }}>
@@ -58,7 +63,7 @@ function App() {
       <label>Brakes<select name="brakes"><option value="pass">Pass</option><option value="fail">Fail</option></select></label><label>Lights<select name="lights"><option value="pass">Pass</option><option value="fail">Fail</option></select></label>
       <label>Notes<textarea name="notes" /></label><label>Result<select name="result"><option value="pass">Pass</option><option value="fail">Fail</option></select></label>
       <button type="submit">Submit / save offline</button><button type="button" onClick={() => void syncDrafts()}>Sync saved inspections</button>
-    </form></section> : <section><h2>Offline certificate check</h2><label>QR payload<textarea value={certificate} onChange={(event) => setCertificate(event.target.value)} placeholder="ERF1...." /></label><button onClick={() => void verifyCertificate()}>Verify signature</button><p className="result">{verification}</p></section>}
+    </form></section> : view === 'verification' ? <section><h2>Offline certificate check</h2><label>QR payload<textarea value={certificate} onChange={(event) => setCertificate(event.target.value)} placeholder="ERF1...." /></label><button onClick={() => void verifyCertificate()}>Verify signature</button><p className="result">{verification}</p></section> : <section><h2>Provision OIDC user</h2><p>Central administrator access is required.</p><form onSubmit={(event) => { event.preventDefault(); void provisionUser(event.currentTarget); }}><label>External identity subject<input name="external_subject" required placeholder="identity-provider subject" /></label><label>Display name<input name="display_name" required /></label><label>Role<select name="role"><option value="inspector">Inspector</option><option value="hub_supervisor">Hub supervisor</option><option value="district_administrator">District administrator</option><option value="finance_operator">Finance operator</option><option value="traffic_police_verifier">Traffic police verifier</option></select></label><label>District UUID<input name="district_id" /></label><label>Zone UUID<input name="zone_id" /></label><button type="submit">Provision user</button></form></section>}
   </main>;
 }
 
