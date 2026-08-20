@@ -202,6 +202,7 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
       const qrHash = createHash('sha256').update(certificateNumber).digest();
       const certificate = await transaction.query<{ id: string; short_code: string; expires_at: Date }>("INSERT INTO certificates (certificate_number, rickshaw_id, qr_hash, key_id, short_code, issued_at, expires_at, status) VALUES ($1, $2, $3, $4, $5, now(), now() + interval '1 year', 'active') RETURNING id, short_code, expires_at", [certificateNumber, row.rickshaw_id, qrHash, config.QR_SIGNING_KEY_ID, randomInt(100000, 999999).toString()]);
       const qr = signer.issue({ cid: certificateNumber, ch: vehicle.rows[0].chassis_number.slice(-4), zone: vehicle.rows[0].zone_code, iat: Math.floor(Date.now() / 1000), exp: Math.floor(certificate.rows[0].expires_at.getTime() / 1000) });
+      await transaction.query('UPDATE certificates SET qr_payload = $1 WHERE id = $2', [qr, certificate.rows[0].id]);
       await transaction.query("INSERT INTO outbox_events (type, aggregate_type, aggregate_id, payload) VALUES ('certificate.issued', 'certificate', $1, $2)", [certificate.rows[0].id, { short_code: certificate.rows[0].short_code, qr }]);
       return { duplicate: false as const, shortCode: certificate.rows[0].short_code };
     });
@@ -248,10 +249,11 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
   });
   app.get('/api/v1/public/certificates/:shortCode.pdf', async (request, reply) => {
     const shortCode = z.string().min(1).max(32).parse((request.params as { shortCode: string }).shortCode);
-    const result = await db.query<{ certificate_number: string; expires_at: Date; status: string; chassis_number: string; zone: string }>("SELECT c.certificate_number, c.expires_at, c.status, r.chassis_number, z.code AS zone FROM certificates c JOIN rickshaws r ON r.id = c.rickshaw_id JOIN zones z ON z.id = r.zone_id WHERE c.short_code = $1", [shortCode]);
+    const result = await db.query<{ certificate_number: string; expires_at: Date; status: string; chassis_number: string; zone: string; qr_payload: string | null }>("SELECT c.certificate_number, c.expires_at, c.status, c.qr_payload, r.chassis_number, z.code AS zone FROM certificates c JOIN rickshaws r ON r.id = c.rickshaw_id JOIN zones z ON z.id = r.zone_id WHERE c.short_code = $1", [shortCode]);
     const certificate = result.rows[0];
     if (!certificate) return reply.code(404).send({ data: { found: false } });
-    const pdf = await renderCertificatePdf({ certificateNumber: certificate.certificate_number, chassisSuffix: certificate.chassis_number.slice(-4), zone: certificate.zone, status: certificate.status, expiresAt: certificate.expires_at, verificationUrl: `/api/v1/public/verify/${shortCode}` });
+    if (!certificate.qr_payload) return reply.code(409).send({ error: { code: 'QR_NOT_READY', message: 'The certificate QR payload is not ready.', request_id: request.id } });
+    const pdf = await renderCertificatePdf({ certificateNumber: certificate.certificate_number, chassisSuffix: certificate.chassis_number.slice(-4), zone: certificate.zone, status: certificate.status, expiresAt: certificate.expires_at, verificationUrl: `/api/v1/public/verify/${shortCode}`, qrPayload: certificate.qr_payload });
     return reply.header('Content-Type', 'application/pdf').header('Content-Disposition', `inline; filename="${certificate.certificate_number}.pdf"`).send(pdf);
   });
 
