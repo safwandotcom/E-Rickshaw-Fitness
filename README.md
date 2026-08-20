@@ -8,6 +8,7 @@ Planning and design documents for a secure, offline-capable e-rickshaw fitness i
 - [Architecture, Data, API & Security Design](docs/02-architecture-data-api-security.md)
 - [Implementation Plan](docs/03-implementation-plan.md)
 - [Deployment Readiness](docs/04-deployment-readiness.md)
+- [OpenAPI Contract](docs/openapi.yaml)
 
 ## Scope at a glance
 

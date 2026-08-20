@@ -11,6 +11,7 @@ type KeyRecord = { key_id: string; public_key_pem: string };
 type Summary = { rickshaws: number; inspections: number; paid_bills: number; active_certificates: number; queued_notifications: number };
 type LiveVerification = { valid: boolean; certificate_number?: string; chassis_suffix?: string; zone?: string; expires_at?: string; status?: string; reason?: string };
 type InspectionTemplate = { id: string; version: string; vehicle_type: string; schema_json?: unknown; effective_from?: string; effective_to?: string | null };
+type Rickshaw = { id: string; chassis_number: string; motor_number?: string | null; district_id: string; zone_id: string; status: string };
 
 function App() {
   const [view, setView] = useState<View>('inspection');
@@ -28,6 +29,9 @@ function App() {
     try { return JSON.parse(localStorage.getItem('erf-inspection-templates') ?? '[]') as InspectionTemplate[]; } catch { return []; }
   });
   const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [vehicleSearch, setVehicleSearch] = useState('');
+  const [vehicleResult, setVehicleResult] = useState<Rickshaw | null>(null);
+  const [vehicleLookupLoading, setVehicleLookupLoading] = useState(false);
 
   async function refreshPending() { setPending((await drafts()).length); }
   useEffect(() => { void refreshPending(); if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/service-worker.js'); }, []);
@@ -106,12 +110,38 @@ function App() {
     const response = await fetch(`${API}/api/v1/admin/users`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...auth }, body: JSON.stringify({ external_subject: values.external_subject, display_name: values.display_name, roles: [values.role], scopes: values.district_id && values.zone_id ? [{ district_id: values.district_id, zone_id: values.zone_id }] : [] }) });
     setMessage(response.ok ? 'User provisioned successfully.' : `Provisioning failed: ${await response.text()}`);
   }
+  async function searchVehicle() {
+    const chassis = vehicleSearch.trim();
+    if (!chassis) { setVehicleResult(null); setMessage('Enter a chassis number to search.'); return; }
+    if (!token || !navigator.onLine) { setMessage('Connect to the internet and sign in before searching the vehicle registry.'); return; }
+    setVehicleLookupLoading(true);
+    try {
+      const response = await fetch(`${API}/api/v1/rickshaws?chassis_number=${encodeURIComponent(chassis)}`, { headers: auth });
+      if (!response.ok) { setVehicleResult(null); setMessage(`Vehicle search failed: ${await response.text()}`); return; }
+      const body = await response.json() as { data: Rickshaw | null };
+      setVehicleResult(body.data);
+      setMessage(body.data ? 'Vehicle found. You can use its UUID in the inspection form.' : 'No vehicle found with that chassis number.');
+    } catch (error) { setVehicleResult(null); setMessage(`Vehicle search failed: ${error instanceof Error ? error.message : 'network error'}`); }
+    finally { setVehicleLookupLoading(false); }
+  }
+  async function registerVehicle(form: HTMLFormElement) {
+    if (!token || !navigator.onLine) { setMessage('Vehicle registration requires an authenticated online connection.'); return; }
+    const values = Object.fromEntries(new FormData(form));
+    try {
+      const response = await fetch(`${API}/api/v1/rickshaws`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...auth }, body: JSON.stringify({ chassis_number: values.chassis_number, motor_number: values.motor_number || undefined, owner_phone: values.owner_phone, district_id: values.district_id, zone_id: values.zone_id }) });
+      if (!response.ok) { setMessage(`Vehicle registration failed: ${await response.text()}`); return; }
+      const body = await response.json() as { data: Rickshaw };
+      setVehicleResult(body.data); setVehicleSearch(String(values.chassis_number));
+      setMessage(`Vehicle registered (${body.data.id}). Use this UUID for the inspection.`);
+      form.reset();
+    } catch (error) { setMessage(`Vehicle registration failed: ${error instanceof Error ? error.message : 'network error'}`); }
+  }
   return <main>
     <header><h1>E-Rickshaw Fitness</h1><p>Inspector & roadside verification PWA</p></header>
     <nav><button onClick={() => setView('inspection')}>Inspection</button><button onClick={() => setView('verification')}>Verify QR</button><button onClick={() => setView('admin')}>Admin</button></nav>
     <section className="notice">{message} Offline queue: {pending}</section>
     <label>Access token (development only)<input value={token} onChange={(event) => setToken(event.target.value)} placeholder="Bearer token" /></label>
-    {view === 'inspection' ? <section><h2>Submit fitness inspection</h2><form onSubmit={(event) => { event.preventDefault(); void submitInspection(event.currentTarget); }}>
+    {view === 'inspection' ? <section><section className="verification-panel"><h2>Vehicle registry</h2><p className="muted">Search an existing vehicle by chassis number or register one in your assigned district and zone.</p><div className="inline-form"><label>Chassis number<input value={vehicleSearch} onChange={(event) => setVehicleSearch(event.target.value)} placeholder="e.g. ER-8821" /></label><button type="button" onClick={() => void searchVehicle()} disabled={vehicleLookupLoading}>{vehicleLookupLoading ? 'Searching…' : 'Search vehicle'}</button></div>{vehicleResult ? <p className="result valid">Found: <strong>{vehicleResult.chassis_number}</strong> · UUID <code>{vehicleResult.id}</code> · Motor {vehicleResult.motor_number ?? '—'} · Status {vehicleResult.status}</p> : null}<details><summary>Register new vehicle</summary><form onSubmit={(event) => { event.preventDefault(); void registerVehicle(event.currentTarget); }}><label>Chassis number<input name="chassis_number" required /></label><label>Motor number<input name="motor_number" /></label><label>Owner phone<input name="owner_phone" required placeholder="01XXXXXXXXX" /></label><label>District UUID<input name="district_id" required /></label><label>Zone UUID<input name="zone_id" required /></label><button type="submit">Register vehicle</button></form></details></section><h2>Submit fitness inspection</h2><form onSubmit={(event) => { event.preventDefault(); void submitInspection(event.currentTarget); }}>
       <label>Rickshaw UUID<input name="rickshaw_id" required /></label>{templates.length > 0 ? <label>Checklist template<select name="template_id" required defaultValue={templates[0].id}>{templates.map((template) => <option value={template.id} key={template.id}>{template.version} — {template.vehicle_type}</option>)}</select>{templatesLoading ? <small>Refreshing templates…</small> : <small>{navigator.onLine && token ? 'Live templates' : 'Cached templates (offline)'}</small>}</label> : <label>Checklist template UUID<input name="template_id" required placeholder="Template UUID (sync requires a published template)" /><small>No cached templates available. Connect and sign in to load the current checklist.</small></label>}
       <label>Brakes<select name="brakes"><option value="pass">Pass</option><option value="fail">Fail</option></select></label><label>Lights<select name="lights"><option value="pass">Pass</option><option value="fail">Fail</option></select></label>
       <label>Notes<textarea name="notes" /></label><label>Result<select name="result"><option value="pass">Pass</option><option value="fail">Fail</option></select></label>

@@ -6,6 +6,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import type { AppConfig } from './config.js';
 import { Database } from './db.js';
 import { DevelopmentQrSigner } from './lib/crypto.js';
+import { registerMetrics } from './metrics.js';
 import { registerRoutes } from './routes.js';
 
 export async function buildApp(config: AppConfig, db: Database): Promise<FastifyInstance> {
@@ -33,6 +34,8 @@ export async function buildApp(config: AppConfig, db: Database): Promise<Fastify
       return reply.code(503).send({ status: 'not_ready', dependencies: { database: 'unavailable', redis: 'not_checked', queue: 'not_checked' } });
     }
   });
+
+  registerMetrics(app);
 
   app.get('/api/v1', async () => ({
     service: 'e-rickshaw-fitness-api',
