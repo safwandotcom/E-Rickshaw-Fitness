@@ -10,6 +10,7 @@ const API = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
 type View = 'inspection' | 'verification' | 'admin';
 type KeyRecord = { key_id: string; public_key_pem: string };
 type Summary = { rickshaws: number; inspections: number; paid_bills: number; active_certificates: number; queued_notifications: number };
+type ReconciliationRow = { bill_code: string; bill_status: string; bill_amount_paisa: number; bill_expires_at: string; provider: string | null; provider_transaction_id: string | null; payment_status: string | null; payment_amount_paisa: number | null; payment_at: string | null };
 type LiveVerification = { valid: boolean; certificate_number?: string; chassis_suffix?: string; zone?: string; expires_at?: string; status?: string; reason?: string };
 type ChecklistField = { key: string; label: string; label_bn?: string; type: 'pass_fail_na' | 'text' };
 type InspectionTemplate = { id: string; version: string; vehicle_type: string; schema_json?: { fields?: ChecklistField[] }; effective_from?: string; effective_to?: string | null };
@@ -27,6 +28,8 @@ function App() {
   const [pending, setPending] = useState(0);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [reconciliation, setReconciliation] = useState<ReconciliationRow[] | null>(null);
+  const [reconciliationLoading, setReconciliationLoading] = useState(false);
   const [templates, setTemplates] = useState<InspectionTemplate[]>(() => {
     try { return JSON.parse(localStorage.getItem('erf-inspection-templates') ?? '[]') as InspectionTemplate[]; } catch { return []; }
   });
@@ -87,6 +90,20 @@ function App() {
     } finally { setSummaryLoading(false); }
   }
   useEffect(() => { if (view === 'admin' && token) void loadSummary(); }, [view, token]);
+  async function loadReconciliation() {
+    if (!token) { setReconciliation(null); return; }
+    setReconciliationLoading(true);
+    try {
+      const response = await fetch(`${API}/api/v1/admin/reconciliation`, { headers: auth });
+      if (!response.ok) { setReconciliation(null); setMessage(`Could not load reconciliation exceptions: ${await response.text()}`); return; }
+      const body = await response.json() as { data: ReconciliationRow[] };
+      setReconciliation(body.data);
+    } catch (error) {
+      setReconciliation(null);
+      setMessage(`Could not load reconciliation exceptions: ${error instanceof Error ? error.message : 'network error'}`);
+    } finally { setReconciliationLoading(false); }
+  }
+  useEffect(() => { if (view === 'admin' && token) void loadReconciliation(); }, [view, token]);
   async function submitInspection(form: HTMLFormElement) {
     const values = Object.fromEntries(new FormData(form));
     const checklistData: Record<string, unknown> = {};
@@ -192,6 +209,7 @@ function App() {
     </form></section> : view === 'verification' ? <section><h2>Certificate verification</h2><p className="muted">Offline signature verification works without internet. Live lookup checks the current certificate status and revocation state.</p><div className="verification-panel"><h3>Offline QR signature</h3><label>QR payload<textarea value={certificate} onChange={(event) => setCertificate(event.target.value)} placeholder="ERF1...." /></label><button onClick={() => void verifyCertificate()}>Verify signature offline</button><p className="result">{verification || 'No offline verification performed yet.'}</p></div><div className="verification-panel"><h3>Live certificate status</h3><label>Certificate short code<input value={shortCode} onChange={(event) => setShortCode(event.target.value)} placeholder="e.g. X9K2L" /></label><button onClick={() => void lookupShortCode()} disabled={liveVerificationLoading}>{liveVerificationLoading ? 'Checking…' : 'Check live status'}</button>{liveVerification ? <p className={`result ${liveVerification.valid ? 'valid' : 'invalid'}`}>{liveVerification.valid ? `Active certificate ${liveVerification.certificate_number ?? ''}. Zone: ${liveVerification.zone ?? '—'}. Chassis: ••••${liveVerification.chassis_suffix ?? '—'}. Expires: ${liveVerification.expires_at ? new Date(liveVerification.expires_at).toLocaleDateString() : '—'}.` : `Live status: ${liveVerification.status ?? 'not valid'}. ${liveVerification.reason ?? 'Certificate is inactive, expired, or not found.'}`}</p> : <p className="muted">No live lookup performed yet.</p>}</div></section> : <>
       <section><h2>Provision OIDC user</h2><p>Central administrator access is required.</p><form onSubmit={(event) => { event.preventDefault(); void provisionUser(event.currentTarget); }}><label>External identity subject<input name="external_subject" required placeholder="identity-provider subject" /></label><label>Display name<input name="display_name" required /></label><label>Role<select name="role"><option value="inspector">Inspector</option><option value="hub_supervisor">Hub supervisor</option><option value="district_administrator">District administrator</option><option value="finance_operator">Finance operator</option><option value="traffic_police_verifier">Traffic police verifier</option></select></label><label>District UUID<input name="district_id" /></label><label>Zone UUID<input name="zone_id" /></label><button type="submit">Provision user</button></form></section>
       <section><div className="section-heading"><div><h2>Operations summary</h2><p className="muted">Counts are limited to your assigned district scope.</p></div><button type="button" onClick={() => void loadSummary()} disabled={summaryLoading}>{summaryLoading ? 'Refreshing…' : 'Refresh summary'}</button></div>{summary ? <div className="summary-grid">{([['rickshaws', 'Registered rickshaws'], ['inspections', 'Inspections'], ['paid_bills', 'Paid bills'], ['active_certificates', 'Active certificates'], ['queued_notifications', 'Queued notifications']] as Array<[keyof Summary, string]>).map(([key, label]) => <div className="summary-card" key={key}><span>{label}</span><strong>{summary[key].toLocaleString()}</strong></div>)}</div> : <p className="muted">Enter an access token with an administrative or finance role to load the summary.</p>}</section>
+      <section><div className="section-heading"><div><h2>Reconciliation exceptions</h2><p className="muted">Failed and reversed payments, and bills otherwise flagged for review. Requires a finance or central administrator role.</p></div><button type="button" onClick={() => void loadReconciliation()} disabled={reconciliationLoading}>{reconciliationLoading ? 'Refreshing…' : 'Refresh exceptions'}</button></div>{reconciliation ? (reconciliation.length > 0 ? <table className="reconciliation-table"><thead><tr><th>Bill</th><th>Bill status</th><th>Amount</th><th>Provider</th><th>Payment status</th><th>Payment amount</th><th>When</th></tr></thead><tbody>{reconciliation.map((row) => <tr key={`${row.bill_code}-${row.provider_transaction_id ?? 'none'}`}><td>{row.bill_code}</td><td>{row.bill_status}</td><td>{(row.bill_amount_paisa / 100).toFixed(2)} BDT</td><td>{row.provider ?? '—'}</td><td>{row.payment_status ?? '—'}</td><td>{row.payment_amount_paisa !== null ? `${(row.payment_amount_paisa / 100).toFixed(2)} BDT` : '—'}</td><td>{row.payment_at ? new Date(row.payment_at).toLocaleString() : '—'}</td></tr>)}</tbody></table> : <p className="muted">No reconciliation exceptions outstanding.</p>) : <p className="muted">Enter an access token with a finance or central administrator role to load exceptions.</p>}</section>
     </>}
   </main>;
 }

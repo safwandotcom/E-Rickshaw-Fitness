@@ -34,7 +34,7 @@ const callbackInput = z.object({
   bill_code: z.string().regex(/^\d{6,8}$/),
   transaction_id: z.string().min(1),
   amount_paisa: z.number().int().positive(),
-  status: z.literal('paid')
+  status: z.enum(['paid', 'failed', 'reversed'])
 });
 const revocationInput = z.object({ reason_code: z.string().trim().min(2).max(64) });
 const userProvisionInput = z.object({
@@ -150,6 +150,26 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
     return { data: Object.fromEntries(Object.entries(row).map(([key, value]) => [key, Number(value)])) };
   });
 
+  app.get('/api/v1/admin/reconciliation', async (request) => {
+    const principal = await principalFor(request, config, oidc, db);
+    requireRole(principal, ['finance_operator', 'central_administrator']);
+    const result = await db.query<{
+      bill_code: string; bill_status: string; bill_amount_paisa: string; bill_expires_at: Date;
+      provider: string | null; provider_transaction_id: string | null; payment_status: string | null; payment_amount_paisa: string | null; payment_at: Date | null;
+    }>(`SELECT b.bill_code, b.status AS bill_status, b.amount_paisa AS bill_amount_paisa, b.expires_at AS bill_expires_at,
+              p.provider, p.provider_transaction_id, p.status AS payment_status, p.amount_paisa AS payment_amount_paisa, p.created_at AS payment_at
+       FROM bills b
+       LEFT JOIN payments p ON p.bill_id = b.id
+       WHERE b.status IN ('reversed', 'reconciliation_required') OR p.status IN ('failed', 'reversed')
+       ORDER BY COALESCE(p.created_at, b.created_at) DESC
+       LIMIT 200`);
+    return { data: result.rows.map((row) => ({
+      bill_code: row.bill_code, bill_status: row.bill_status, bill_amount_paisa: Number(row.bill_amount_paisa), bill_expires_at: row.bill_expires_at,
+      provider: row.provider, provider_transaction_id: row.provider_transaction_id, payment_status: row.payment_status,
+      payment_amount_paisa: row.payment_amount_paisa === null ? null : Number(row.payment_amount_paisa), payment_at: row.payment_at
+    })) };
+  });
+
   app.post('/api/v1/rickshaws', async (request, reply) => {
     const principal = await principalFor(request, config, oidc, db);
     requireRole(principal, ['inspector', 'hub_supervisor', 'district_administrator', 'central_administrator']);
@@ -228,29 +248,75 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
     if (typeof supplied !== 'string' || supplied.length !== expected.length || !timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) return reply.code(401).send({ error: { code: 'INVALID_SIGNATURE', message: 'Signature validation failed.', request_id: request.id } });
     const input = callbackInput.parse(JSON.parse(raw));
     const provider = z.string().min(1).max(32).parse((request.params as { provider: string }).provider);
+
+    if (input.status === 'paid') {
+      const outcome = await db.transaction(async (transaction) => {
+        const existing = await transaction.query<{ id: string }>('SELECT id FROM payments WHERE provider = $1 AND provider_transaction_id = $2', [provider, input.transaction_id]);
+        if (existing.rows[0]) return { duplicate: true as const, shortCode: null };
+        const bill = await transaction.query<{ id: string; rickshaw_id: string; amount_paisa: string; status: string }>('SELECT id, rickshaw_id, amount_paisa, status FROM bills WHERE bill_code = $1 FOR UPDATE', [input.bill_code]);
+        const row = bill.rows[0];
+        if (!row || row.status !== 'unpaid' || Number(row.amount_paisa) !== input.amount_paisa) return { invalid: true as const };
+        const vehicle = await transaction.query<{ chassis_number: string; zone_code: string; owner_phone_encrypted: Buffer }>('SELECT r.chassis_number, z.code AS zone_code, r.owner_phone_encrypted FROM rickshaws r JOIN zones z ON z.id = r.zone_id WHERE r.id = $1', [row.rickshaw_id]);
+        if (!vehicle.rows[0]) return { invalid: true as const };
+        await transaction.query("INSERT INTO payments (bill_id, provider, provider_transaction_id, callback_event_id, amount_paisa, status, paid_at) VALUES ($1, $2, $3, $4, $5, 'paid', now())", [row.id, provider, input.transaction_id, input.event_id, input.amount_paisa]);
+        await transaction.query("UPDATE bills SET status = 'paid' WHERE id = $1", [row.id]);
+        await transaction.query("UPDATE rickshaws SET status = 'certified', updated_at = now() WHERE id = $1", [row.rickshaw_id]);
+        const certificateNumber = `ERF-${new Date().getUTCFullYear()}-${randomInt(10000000, 99999999)}`;
+        const qrHash = createHash('sha256').update(certificateNumber).digest();
+        const certificate = await transaction.query<{ id: string; short_code: string; expires_at: Date }>("INSERT INTO certificates (certificate_number, rickshaw_id, qr_hash, key_id, short_code, issued_at, expires_at, status) VALUES ($1, $2, $3, $4, $5, now(), now() + interval '1 year', 'active') RETURNING id, short_code, expires_at", [certificateNumber, row.rickshaw_id, qrHash, config.QR_SIGNING_KEY_ID, randomInt(100000, 999999).toString()]);
+        const qr = signer.issue({ cid: certificateNumber, ch: vehicle.rows[0].chassis_number.slice(-4), zone: vehicle.rows[0].zone_code, iat: Math.floor(Date.now() / 1000), exp: Math.floor(certificate.rows[0].expires_at.getTime() / 1000) });
+        await transaction.query('UPDATE certificates SET qr_payload = $1 WHERE id = $2', [qr, certificate.rows[0].id]);
+        await transaction.query("INSERT INTO outbox_events (type, aggregate_type, aggregate_id, payload) VALUES ('certificate.issued', 'certificate', $1, $2)", [certificate.rows[0].id, { short_code: certificate.rows[0].short_code, qr }]);
+        await transaction.query("INSERT INTO notification_jobs (type, recipient_encrypted, payload) VALUES ('certificate_issued', $1, $2)", [vehicle.rows[0].owner_phone_encrypted, { certificate_short_code: certificate.rows[0].short_code }]);
+        return { duplicate: false as const, shortCode: certificate.rows[0].short_code };
+      });
+      if (outcome.duplicate) return { data: { accepted: true, duplicate: true } };
+      if ('invalid' in outcome && outcome.invalid) return reply.code(409).send({ error: { code: 'PAYMENT_NOT_ACCEPTED', message: 'The payment could not be matched to an unpaid bill.', request_id: request.id } });
+      return { data: { accepted: true, certificate_short_code: outcome.shortCode } };
+    }
+
+    if (input.status === 'failed') {
+      // A failed attempt is recorded for reconciliation visibility but does
+      // not change the bill: the owner may retry payment before it expires.
+      const outcome = await db.transaction(async (transaction) => {
+        const existing = await transaction.query<{ id: string }>('SELECT id FROM payments WHERE provider = $1 AND provider_transaction_id = $2', [provider, input.transaction_id]);
+        if (existing.rows[0]) return { duplicate: true as const };
+        const bill = await transaction.query<{ id: string }>('SELECT id FROM bills WHERE bill_code = $1 FOR UPDATE', [input.bill_code]);
+        if (!bill.rows[0]) return { invalid: true as const };
+        await transaction.query("INSERT INTO payments (bill_id, provider, provider_transaction_id, callback_event_id, amount_paisa, status) VALUES ($1, $2, $3, $4, $5, 'failed')", [bill.rows[0].id, provider, input.transaction_id, input.event_id, input.amount_paisa]);
+        return { duplicate: false as const };
+      });
+      if (outcome.invalid) return reply.code(409).send({ error: { code: 'PAYMENT_NOT_ACCEPTED', message: 'The payment could not be matched to a known bill.', request_id: request.id } });
+      return { data: { accepted: true, outcome: 'failed', duplicate: outcome.duplicate } };
+    }
+
+    // input.status === 'reversed': the provider is reversing a previously
+    // paid transaction. Any certificate already issued off that payment is
+    // revoked immediately — there is no human actor for this event, so the
+    // revocation is recorded with a null actor (see certificate_revocations).
     const outcome = await db.transaction(async (transaction) => {
-      const existing = await transaction.query<{ id: string }>('SELECT id FROM payments WHERE provider = $1 AND provider_transaction_id = $2', [provider, input.transaction_id]);
-      if (existing.rows[0]) return { duplicate: true as const, shortCode: null };
-      const bill = await transaction.query<{ id: string; rickshaw_id: string; amount_paisa: string; status: string }>('SELECT id, rickshaw_id, amount_paisa, status FROM bills WHERE bill_code = $1 FOR UPDATE', [input.bill_code]);
-      const row = bill.rows[0];
-      if (!row || row.status !== 'unpaid' || Number(row.amount_paisa) !== input.amount_paisa) return { invalid: true as const };
-      const vehicle = await transaction.query<{ chassis_number: string; zone_code: string; owner_phone_encrypted: Buffer }>('SELECT r.chassis_number, z.code AS zone_code, r.owner_phone_encrypted FROM rickshaws r JOIN zones z ON z.id = r.zone_id WHERE r.id = $1', [row.rickshaw_id]);
-      if (!vehicle.rows[0]) return { invalid: true as const };
-      await transaction.query("INSERT INTO payments (bill_id, provider, provider_transaction_id, callback_event_id, amount_paisa, status, paid_at) VALUES ($1, $2, $3, $4, $5, 'paid', now())", [row.id, provider, input.transaction_id, input.event_id, input.amount_paisa]);
-      await transaction.query("UPDATE bills SET status = 'paid' WHERE id = $1", [row.id]);
-      await transaction.query("UPDATE rickshaws SET status = 'certified', updated_at = now() WHERE id = $1", [row.rickshaw_id]);
-      const certificateNumber = `ERF-${new Date().getUTCFullYear()}-${randomInt(10000000, 99999999)}`;
-      const qrHash = createHash('sha256').update(certificateNumber).digest();
-      const certificate = await transaction.query<{ id: string; short_code: string; expires_at: Date }>("INSERT INTO certificates (certificate_number, rickshaw_id, qr_hash, key_id, short_code, issued_at, expires_at, status) VALUES ($1, $2, $3, $4, $5, now(), now() + interval '1 year', 'active') RETURNING id, short_code, expires_at", [certificateNumber, row.rickshaw_id, qrHash, config.QR_SIGNING_KEY_ID, randomInt(100000, 999999).toString()]);
-      const qr = signer.issue({ cid: certificateNumber, ch: vehicle.rows[0].chassis_number.slice(-4), zone: vehicle.rows[0].zone_code, iat: Math.floor(Date.now() / 1000), exp: Math.floor(certificate.rows[0].expires_at.getTime() / 1000) });
-      await transaction.query('UPDATE certificates SET qr_payload = $1 WHERE id = $2', [qr, certificate.rows[0].id]);
-      await transaction.query("INSERT INTO outbox_events (type, aggregate_type, aggregate_id, payload) VALUES ('certificate.issued', 'certificate', $1, $2)", [certificate.rows[0].id, { short_code: certificate.rows[0].short_code, qr }]);
-      await transaction.query("INSERT INTO notification_jobs (type, recipient_encrypted, payload) VALUES ('certificate_issued', $1, $2)", [vehicle.rows[0].owner_phone_encrypted, { certificate_short_code: certificate.rows[0].short_code }]);
-      return { duplicate: false as const, shortCode: certificate.rows[0].short_code };
+      const payment = await transaction.query<{ id: string; bill_id: string; status: string }>('SELECT id, bill_id, status FROM payments WHERE provider = $1 AND provider_transaction_id = $2 FOR UPDATE', [provider, input.transaction_id]);
+      const row = payment.rows[0];
+      if (!row) return { invalid: true as const };
+      if (row.status === 'reversed') return { duplicate: true as const, billId: row.bill_id };
+      if (row.status !== 'paid') return { invalid: true as const };
+      await transaction.query("UPDATE payments SET status = 'reversed' WHERE id = $1", [row.id]);
+      await transaction.query("UPDATE bills SET status = 'reversed' WHERE id = $1", [row.bill_id]);
+      const bill = await transaction.query<{ rickshaw_id: string }>('SELECT rickshaw_id FROM bills WHERE id = $1', [row.bill_id]);
+      const rickshawId = bill.rows[0]?.rickshaw_id;
+      if (rickshawId) {
+        const certificate = await transaction.query<{ id: string }>("SELECT id FROM certificates WHERE rickshaw_id = $1 AND status = 'active' FOR UPDATE", [rickshawId]);
+        if (certificate.rows[0]) {
+          await transaction.query("UPDATE certificates SET status = 'revoked' WHERE id = $1", [certificate.rows[0].id]);
+          await transaction.query("UPDATE rickshaws SET status = 'suspended', updated_at = now() WHERE id = $1", [rickshawId]);
+          await transaction.query('INSERT INTO certificate_revocations (certificate_id, reason_code, revoked_by) VALUES ($1, $2, NULL)', [certificate.rows[0].id, 'payment_reversed']);
+        }
+      }
+      return { duplicate: false as const, billId: row.bill_id };
     });
-    if ('duplicate' in outcome && outcome.duplicate) return { data: { accepted: true, duplicate: true } };
-    if ('invalid' in outcome && outcome.invalid) return reply.code(409).send({ error: { code: 'PAYMENT_NOT_ACCEPTED', message: 'The payment could not be matched to an unpaid bill.', request_id: request.id } });
-    return { data: { accepted: true, certificate_short_code: outcome.shortCode } };
+    if ('invalid' in outcome && outcome.invalid) return reply.code(409).send({ error: { code: 'PAYMENT_NOT_ACCEPTED', message: 'The payment could not be matched to a known paid transaction.', request_id: request.id } });
+    if (!outcome.duplicate) await audit(db, null, 'payment.reversed', 'bill', outcome.billId, request);
+    return { data: { accepted: true, outcome: 'reversed', duplicate: outcome.duplicate } };
   });
 
   app.post('/api/v1/webhooks/sms/:provider', async (request, reply) => {
@@ -319,6 +385,6 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
   });
 }
 
-async function audit(db: Database, actorId: string, action: string, entityType: string, entityId: string, request: FastifyRequest): Promise<void> {
+async function audit(db: Database, actorId: string | null, action: string, entityType: string, entityId: string, request: FastifyRequest): Promise<void> {
   await db.query('INSERT INTO audit_events (actor_id, action, entity_type, entity_id, request_id, ip) VALUES ($1, $2, $3, $4, $5, $6)', [actorId, action, entityType, entityId, request.id, request.ip]);
 }
