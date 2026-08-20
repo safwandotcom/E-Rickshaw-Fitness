@@ -12,6 +12,8 @@
 - Privileged certificate revocation and renewal (supersession) with geographic authorization, audit trail, and automatic bill/certificate expiry sweeps.
 - Inspection void/correction workflow (`POST /api/v1/inspections/:id/void`) for hub supervisors and above, with a required reason and automatic unwind of an unpaid bill/pre-approved rickshaw status.
 - RabbitMQ outbox publisher and a durable domain-event consumer that persists every published event to an append-only `domain_events` table for support/replay, independent of the `notification_jobs` polling worker that actually sends SMS. Plus a local PostgreSQL/Redis/RabbitMQ compose environment.
+- Camera-based QR capture in the verifier (`jsQR`, decoded on-device) alongside the manual paste fallback; a request-level test suite covering the vehicle registry endpoints.
+- An EN/বাংলা language toggle for the PWA's static chrome (nav, headings, labels, buttons, fixed status text — not messages that embed raw API error text) plus a first accessibility pass: `aria-live` status regions, a skip-to-content link, visible focus outlines, `aria-current` on the active nav tab, and a captioned/scoped reconciliation table. The Bangla strings are a best-effort working translation, not reviewed by a native speaker — treat as a starting point before a real pilot, and get a full WCAG 2.1 AA audit (this pass is not one) before relying on it for compliance.
 
 ## Required before a production rollout
 
