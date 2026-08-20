@@ -28,3 +28,14 @@ export class UnconfiguredSmsProvider implements SmsProvider {
     throw new Error('SMS provider is not configured for this environment.');
   }
 }
+
+export class HttpSmsProvider implements SmsProvider {
+  constructor(private readonly url: string, private readonly token: string) {}
+
+  async send(message: SmsMessage): Promise<{ providerMessageId: string; accepted: boolean }> {
+    const response = await fetch(this.url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${this.token}` }, body: JSON.stringify(message) });
+    if (!response.ok) throw new Error(`SMS gateway returned HTTP ${response.status}.`);
+    const body = await response.json() as { message_id?: string; accepted?: boolean };
+    return { providerMessageId: body.message_id ?? 'unknown', accepted: body.accepted ?? true };
+  }
+}

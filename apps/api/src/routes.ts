@@ -156,7 +156,7 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
       return reply.code(row.response_status ?? 200).send(row.response_json);
     }
     const outcome = await db.transaction(async (transaction) => {
-      const vehicle = await transaction.query<{ district_id: string; zone_id: string }>('SELECT district_id, zone_id FROM rickshaws WHERE id = $1 FOR UPDATE', [input.rickshaw_id]);
+      const vehicle = await transaction.query<{ district_id: string; zone_id: string; owner_phone_encrypted: Buffer }>('SELECT district_id, zone_id, owner_phone_encrypted FROM rickshaws WHERE id = $1 FOR UPDATE', [input.rickshaw_id]);
       if (!vehicle.rows[0]) return null;
       requireZoneAccess(principal, vehicle.rows[0].district_id, vehicle.rows[0].zone_id);
       const inspection = await transaction.query<{ id: string }>('INSERT INTO inspections (rickshaw_id, inspector_id, template_id, checklist_data, result, status, client_timestamp, submitted_at) VALUES ($1, $2, $3, $4, $5, $6, $7, now()) RETURNING id', [input.rickshaw_id, principal.userId, input.template_id, input.checklist_data, input.result, input.result === 'pass' ? 'passed' : 'failed', input.client_timestamp ?? null]);
@@ -166,6 +166,7 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
         const created = await transaction.query<{ bill_code: string; expires_at: Date }>("INSERT INTO bills (bill_code, rickshaw_id, inspection_id, amount_paisa, expires_at, fee_rule_version) VALUES ($1, $2, $3, $4, now() + interval '48 hours', $5) RETURNING bill_code, expires_at", [billCode(), input.rickshaw_id, inspection.rows[0].id, 50000, 'v1']);
         bill = created.rows[0];
         await transaction.query("INSERT INTO outbox_events (type, aggregate_type, aggregate_id, payload) VALUES ('payment.instructions.requested', 'bill', $1, $2)", [inspection.rows[0].id, { bill_code: bill.bill_code, rickshaw_id: input.rickshaw_id }]);
+        await transaction.query("INSERT INTO notification_jobs (type, recipient_encrypted, payload) VALUES ('payment_instructions', $1, $2)", [vehicle.rows[0].owner_phone_encrypted, { bill_code: bill.bill_code, amount_paisa: 50000, expires_at: bill.expires_at }]);
       }
       return { inspectionId: inspection.rows[0].id, bill };
     });
@@ -193,7 +194,7 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
       const bill = await transaction.query<{ id: string; rickshaw_id: string; amount_paisa: string; status: string }>('SELECT id, rickshaw_id, amount_paisa, status FROM bills WHERE bill_code = $1 FOR UPDATE', [input.bill_code]);
       const row = bill.rows[0];
       if (!row || row.status !== 'unpaid' || Number(row.amount_paisa) !== input.amount_paisa) return { invalid: true as const };
-      const vehicle = await transaction.query<{ chassis_number: string; zone_code: string }>('SELECT r.chassis_number, z.code AS zone_code FROM rickshaws r JOIN zones z ON z.id = r.zone_id WHERE r.id = $1', [row.rickshaw_id]);
+      const vehicle = await transaction.query<{ chassis_number: string; zone_code: string; owner_phone_encrypted: Buffer }>('SELECT r.chassis_number, z.code AS zone_code, r.owner_phone_encrypted FROM rickshaws r JOIN zones z ON z.id = r.zone_id WHERE r.id = $1', [row.rickshaw_id]);
       if (!vehicle.rows[0]) return { invalid: true as const };
       await transaction.query("INSERT INTO payments (bill_id, provider, provider_transaction_id, callback_event_id, amount_paisa, status, paid_at) VALUES ($1, $2, $3, $4, $5, 'paid', now())", [row.id, provider, input.transaction_id, input.event_id, input.amount_paisa]);
       await transaction.query("UPDATE bills SET status = 'paid' WHERE id = $1", [row.id]);
@@ -204,6 +205,7 @@ export function registerRoutes(app: FastifyInstance, config: AppConfig, db: Data
       const qr = signer.issue({ cid: certificateNumber, ch: vehicle.rows[0].chassis_number.slice(-4), zone: vehicle.rows[0].zone_code, iat: Math.floor(Date.now() / 1000), exp: Math.floor(certificate.rows[0].expires_at.getTime() / 1000) });
       await transaction.query('UPDATE certificates SET qr_payload = $1 WHERE id = $2', [qr, certificate.rows[0].id]);
       await transaction.query("INSERT INTO outbox_events (type, aggregate_type, aggregate_id, payload) VALUES ('certificate.issued', 'certificate', $1, $2)", [certificate.rows[0].id, { short_code: certificate.rows[0].short_code, qr }]);
+      await transaction.query("INSERT INTO notification_jobs (type, recipient_encrypted, payload) VALUES ('certificate_issued', $1, $2)", [vehicle.rows[0].owner_phone_encrypted, { certificate_short_code: certificate.rows[0].short_code }]);
       return { duplicate: false as const, shortCode: certificate.rows[0].short_code };
     });
     if ('duplicate' in outcome && outcome.duplicate) return { data: { accepted: true, duplicate: true } };

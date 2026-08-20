@@ -14,7 +14,9 @@ const environmentSchema = z.object({
   QR_SIGNING_KEY_ID: z.string().min(1).default('dev-2026-01')
   ,OIDC_ENABLED: z.preprocess((value) => value === 'true', z.boolean().default(false)),
   OIDC_ISSUER_URL: z.string().url().optional(),
-  OIDC_AUDIENCE: z.string().min(1).optional()
+  OIDC_AUDIENCE: z.string().min(1).optional(),
+  SMS_GATEWAY_URL: z.string().url().optional(),
+  SMS_GATEWAY_TOKEN: z.string().min(16).optional()
 });
 
 export type AppConfig = z.infer<typeof environmentSchema>;
